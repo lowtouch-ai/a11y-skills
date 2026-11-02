@@ -65,22 +65,30 @@
     const a = im.closest('a[href]'); const hasMap = im.hasAttribute('usemap');
     const ariaN = (im.getAttribute('aria-label') || '').trim() || (im.hasAttribute('aria-labelledby') ? idText(im.getAttribute('aria-labelledby')) : '');
     if (hasMap) { hasAlt ? add('feature', 'alt_map', im) : add('error', 'alt_map_missing', im); }
+    const rc = im.getBoundingClientRect();
+    const spacer = rc.width > 0 && rc.height > 0 && Math.min(rc.width, rc.height) <= 3; // 1px layout images
     if (!hasAlt && !ariaN) {
       if (a && !txt(a)) add('error', 'alt_link_missing', im);
-      else if (im.naturalWidth <= 3 && im.naturalHeight <= 3 && im.naturalWidth > 0) add('error', 'alt_spacer_missing', im);
+      else if (spacer) add('error', 'alt_spacer_missing', im);
       else add('error', 'alt_missing', im);
       if (im.hasAttribute('title')) add('alert', 'image_title', im);
-    } else if (hasAlt && alt === '') {
-      (im.naturalWidth <= 3 && im.naturalHeight <= 3) ? add('feature', 'alt_spacer', im) : add('feature', 'alt_null', im);
+    } else if (hasAlt && alt === '' && !ariaN) {
+      // empty alt on an image that is the only content of a link leaves the link unnamed
+      if (a && !txt(a)) add('error', 'alt_link_missing', im);
+      else add('feature', spacer ? 'alt_spacer' : 'alt_null', im);
     } else {
-      add('feature', a ? 'alt_link' : 'alt', im, { alt });
-      if (SUSP.test(alt)) add('alert', 'alt_suspicious', im, { alt });
-      if (alt.length > 100) add('alert', 'alt_long', im, { alt: alt.slice(0, 60) + '...' });
-      const nxt = im.nextElementSibling, prv = im.previousElementSibling;
+      let flagged = false;
+      const flag = (id, x) => { flagged = true; add('alert', id, im, x); };
+      if (SUSP.test(alt)) flag('alt_suspicious', { alt });
+      if (alt.length > 100) flag('alt_long', { alt: alt.slice(0, 60) + '...' });
       const near = [a ? txt(a).replace(alt, '') : '', im.nextSibling && im.nextSibling.textContent || '', im.previousSibling && im.previousSibling.textContent || ''].map(s => s.trim().toLowerCase());
-      if (alt && (a ? txt(a).toLowerCase() === alt.toLowerCase() : near.some(s => s === alt.toLowerCase()))) add('alert', 'alt_redundant', im, { alt });
-      const o = imgs[i + 1]; if (o && o.hasAttribute('alt') && alt && o.getAttribute('alt').trim() === alt) add('alert', 'alt_duplicate', im, { alt });
+      if (alt && (a ? txt(a).toLowerCase() === alt.toLowerCase() : near.some(s => s === alt.toLowerCase()))) flag('alt_redundant', { alt });
+      // duplicate: the very next node (ignoring whitespace) is an image with the same alt
+      let nx = im.nextSibling; while (nx && nx.nodeType === 3 && !nx.textContent.trim()) nx = nx.nextSibling;
+      if (alt && nx && nx.nodeType === 1 && nx.tagName === 'IMG' && (nx.getAttribute('alt') || '').trim() === alt) flag('alt_duplicate', { alt });
       if (im.hasAttribute('title') && im.getAttribute('title').trim().toLowerCase() === alt.toLowerCase()) add('alert', 'title_redundant', im);
+      // WAVE lists an image under Features only when it raised no alert
+      if (!flagged) add('feature', a ? 'alt_link' : 'alt', im, { alt });
     }
     if (im.hasAttribute('longdesc')) { add('alert', 'longdesc', im); if (!/^(https?:|\/|\.|[\w-]+\.\w+|#)/.test(im.getAttribute('longdesc'))) add('error', 'longdesc_invalid', im); }
   });
@@ -113,13 +121,17 @@
   // ---------- links / buttons
   const SUSL = /^(click here|here|more|read more|link|this|click|more\.\.\.|learn more|continue|details|info)$/i;
   const links = $$('a[href]');
+  const redundantSeen = new Set();
   links.forEach((a, i) => {
     const n = name(a);
-    // a link whose image lacks alt is reported once, as alt_link_missing
-    if (!n && !a.querySelector('img:not([alt])')) add('error', 'link_empty', a);
+    // a link containing an image with missing/empty alt is reported once, as alt_link_missing
+    if (!n && !a.querySelector('img')) add('error', 'link_empty', a);
     else if (SUSL.test(n)) add('alert', 'link_suspicious', a, { text: n });
     const nx = links[i + 1];
-    if (nx && nx.getAttribute('href') === a.getAttribute('href') && a.nextSibling === nx) add('alert', 'link_redundant', a);
+    // consecutive links to the same URL: both are flagged. Links already flagged as suspicious text are skipped (calibrated on one page).
+    if (nx && nx.getAttribute('href') === a.getAttribute('href') && !SUSL.test(n) && !SUSL.test(name(nx))) {
+      [a, nx].forEach(x => { if (!redundantSeen.has(x)) { redundantSeen.add(x); add('alert', 'link_redundant', x); } });
+    }
     const h = a.getAttribute('href') || '';
     if (/\.docx?($|\?)/i.test(h)) add('alert', 'link_word', a);
     else if (/\.xlsx?($|\?)/i.test(h)) add('alert', 'link_excel', a);
@@ -181,12 +193,12 @@
   $$('p,div,td').forEach(e => { const t = e.innerText || ''; if (e.children.length < 40 && /(^|\n)\s*([-*•·]|\d+[.)])\s+\S[^\n]*\n\s*([-*•·]|\d+[.)])\s+\S/.test(t) && !e.querySelector('ul,ol')) add('alert', 'list_possible', e); });
   // possible heading: short bold/large text blocks in p/div/span not heading
   $$('p,div,span,b,strong,font').forEach(e => {
-    if (e.closest('h1,h2,h3,h4,h5,h6,a,button,label,th,td,li,nav')) return;
+    if (e.closest('h1,h2,h3,h4,h5,h6,a,button,label,th,li,nav')) return;
     const t = txt(e); if (!t || t.length > 60 || e.children.length > 1) return;
     const own = [...e.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
     if (!own) return;
     const cs = getComputedStyle(e); const fs = parseFloat(cs.fontSize);
-    if ((cs.fontWeight >= 700 || cs.fontWeight === 'bold') && fs >= 16 && (e.tagName === 'P' || e.tagName === 'DIV' || e.tagName === 'B' || e.tagName === 'STRONG') && (e.tagName === 'B' || e.tagName === 'STRONG' ? e.parentElement && txt(e.parentElement) === t : true)) add('alert', 'heading_possible', e, { text: t });
+    if ((fs >= 24 && (e.tagName === 'P' || e.tagName === 'DIV')) || (cs.fontWeight >= 700 || cs.fontWeight === 'bold') && fs >= 16 && (e.tagName === 'P' || e.tagName === 'DIV' || e.tagName === 'B' || e.tagName === 'STRONG') && (e.tagName === 'B' || e.tagName === 'STRONG' ? e.parentElement && txt(e.parentElement) === t : true)) add('alert', 'heading_possible', e, { text: t });
   });
 
   // ---------- keyboard / misc attributes
@@ -241,7 +253,7 @@
     const cs = getComputedStyle(el);
     if (cs.display === 'none' || cs.visibility === 'hidden') continue;
     const fs = parseFloat(cs.fontSize);
-    if (fs <= 10) add('alert', 'text_small', el, { size: fs + 'px' });
+    if (fs < 10) add('alert', 'text_small', el, { size: fs + 'px' });
     if (cs.textAlign === 'justify' && tn.textContent.length > 200) add('alert', 'text_justified', el);
     if (cs.textDecorationLine.includes('underline') && cs.textDecorationStyle !== 'dotted' && !el.closest('a')) add('alert', 'underline', el);
     let op = 1, n = el; while (n && n.nodeType === 1) { op *= parseFloat(getComputedStyle(n).opacity); n = n.parentElement; }

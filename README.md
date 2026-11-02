@@ -79,6 +79,10 @@ It writes `report.html` (give this to the client), `report.md`, and one JSON fil
 2. Save them as JSON using WAVE item IDs: `{"alt_missing": 29, "contrast": 2}`. IDs are in [`references/wave-rule-catalog.json`](skills/wave-a11y-scan/references/wave-rule-catalog.json).
 3. Run `python3 skills/wave-a11y-scan/scripts/compare.py a11y-report/<page>.json wave_counts.json`.
 
+## Calibration status
+
+Checked against the WAVE Chrome extension on one page so far: the W3C "Before" demo (`https://www.w3.org/WAI/demos/bad/before/home.html`, WAVE counts in [`tests/calibration/`](tests/calibration)). All 23 item types and all six category totals match. Several rules (spacer images, redundant links, small text, possible headings) were tuned on that single page, so treat other sites as unverified until compared. Add more pages to `tests/calibration/` as they are checked. WAVE's newer "AIM score" is not reproduced.
+
 ## Troubleshooting
 
 | Symptom | Fix |

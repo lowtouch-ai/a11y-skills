@@ -53,4 +53,5 @@ Report per-item matches and gaps. Differences in alert heuristics (suspicious al
 
 - `table_caption_possible` is not implemented. Contrast over background images or gradients is skipped and counted in the report.
 - Only the DOM present at scan time is checked; menus, dialogs and tabs closed at load are not seen.
-- Detection thresholds for alert-type items are approximations of WAVE's.
+- Detection thresholds for alert-type items are approximations of WAVE's. Matched 100% against the extension on one page (W3C "bad before" demo); other pages are unverified. Add comparisons under `tests/calibration/`.
+- WAVE's "AIM score" is not reproduced.
