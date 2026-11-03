@@ -5,7 +5,7 @@ Codex skills by lowtouch.ai.
 | Skill | What it does |
 |---|---|
 | [`wave-a11y-scan`](skills/wave-a11y-scan) | Scans pages with the same checks as the WAVE tool (WebAIM) and writes a client-ready report. Findings fall into WAVE's six categories (Errors, Contrast Errors, Alerts, Features, Structural Elements, ARIA) and each links to its WCAG 2.x success criteria, with a Section 508 note. Needs Playwright (see below). |
-| [`repo-readme-generator`](skills/repo-readme-generator) | Creates or updates a repository's root `README.md` from verified evidence: architecture with Mermaid diagrams, component inventory, setup/build/run/test, configuration, APIs, deployment. Includes a validator and a drift checker. No extra dependencies. |
+| [`repo-readme-generator`](skills/repo-readme-generator) | Creates or updates project documentation from verified evidence: an architecture-focused `README.md`, or a full documentation suite for developers and coding agents (`AGENTS.md`, codebase map, architecture, stack and dependencies, design decisions, development guide, testing, configuration, API, data model, operations, security). Diagrams as Mermaid or generated SVG. Includes validators and a drift checker. No extra dependencies. |
 
 ## Install a skill in Codex
 
@@ -101,6 +101,7 @@ Checked against the WAVE Chrome extension on one page so far: the W3C "Before" d
 |---|---|
 | `ModuleNotFoundError: playwright` | Run the `pip install` line from step 3 with the same Python that runs the scan. |
 | `Executable doesn't exist` / browser not found | Run `python3 -m playwright install chromium`. |
+| Exit code 3, or "Pages that could not be scanned" in the report | A URL did not load (typo, DNS, timeout, TLS). The message says why; the other pages are still reported. A URL without `https://` is scanned as `https://`. |
 | Report warns about a "Just a moment..." page | The site's bot protection blocked the scanner. Scan a staging copy, or pass `--storage-state` from a logged-in session. |
 | Codex doesn't list the skill | Confirm the folder is `~/.codex/skills/wave-a11y-scan/SKILL.md`, then restart Codex. |
 
@@ -110,34 +111,54 @@ It reproduces WAVE's 110-item rule set. Detection thresholds for judgment-based 
 
 ## repo-readme-generator
 
-Creates, updates or audits a repository's root `README.md`. Ask Codex:
+Creates, updates or audits project documentation. Every component, command and dependency in the output comes from a file in the repository; anything unverifiable is labeled `TBD` or `Planned`, and design rationale inferred from code is labeled as inferred. Codex does not install dependencies or start services without asking, and it ends with a summary of what changed and what it could not verify.
 
-| You say | Mode |
-|---|---|
-| "Generate a README for this repo" | create |
-| "Update the README, we added a worker service" | update (edits only stale sections, keeps accurate text) |
-| "Is the README out of date?" | audit (reports, changes nothing) |
+### Scopes
 
-Every component and command in the README comes from a file in the repository; anything unverifiable is labeled `TBD` or `Planned`. Codex does not install dependencies or start services without asking, and ends with a summary of what changed and what it could not verify. Section list: [`readme-template.md`](skills/repo-readme-generator/references/readme-template.md).
+| You say | Scope | Output |
+|---|---|---|
+| "Generate a README for this repo" | `readme` | `README.md` (17 fixed sections, table of contents, diagrams) |
+| "Document this repo", "onboarding docs", "docs for coding agents" | `standard` | README + `AGENTS.md` + `docs/` codebase map, architecture, development guide, configuration (+ API reference, data model when they exist) |
+| "As much detail as possible", "full documentation: architecture, stack, design, dependencies" | `full` | Everything applicable: adds tech stack and dependency tables, design and decisions, testing, deployment and operations, security, troubleshooting, glossary |
 
-**Keep READMEs current with AGENTS.md.** Ask Codex "Add the README maintenance rules to AGENTS.md", or copy the block from [`agents-md-snippet.md`](skills/repo-readme-generator/references/agents-md-snippet.md) into your repository's `AGENTS.md`.
+Modes: **create**, **update** (edits only stale sections), **audit** (reports, changes nothing). Documents whose subject does not exist in the repo are skipped and listed as "Not applicable". What each document contains and where its evidence comes from: [`doc-suite.md`](skills/repo-readme-generator/references/doc-suite.md).
 
-**Run the scripts directly** (read-only, no dependencies), from the target repository's root:
+### Diagrams: Mermaid or SVG
+
+Mermaid is the default (renders natively on GitHub, easy to diff). For SVG, Codex writes a small JSON spec and `make_svg.py` renders a clean, accessible diagram (architecture with groups, lanes and legend; sequence flows). Use SVG when you ask for it, when the docs are read outside GitHub (PDF, wiki, Confluence), or when a diagram is large. Specs live in `docs/diagrams/src/` so diagrams can be regenerated when the architecture changes. Guide: [`svg-guide.md`](skills/repo-readme-generator/references/svg-guide.md).
+
+Example prompts:
+
+> Use the repo-readme-generator skill to create a README for this repository.
+>
+> Use the repo-readme-generator skill to build the full documentation suite for this repo, with SVG diagrams, so a coding agent can work on it.
+>
+> Use the repo-readme-generator skill to update the docs, we added a worker service.
+
+### Keep docs current with AGENTS.md
+In suite scope Codex creates `AGENTS.md` for you (commands, conventions, boundaries, docs map, and the documentation-maintenance rules). In README scope, ask "Add the README maintenance rules to AGENTS.md", or copy the block from [`agents-md-snippet.md`](skills/repo-readme-generator/references/agents-md-snippet.md). Afterwards Codex checks for drift whenever a change touches architecture, commands, configuration or infrastructure.
+
+### Run the scripts directly
+Read-only except `make_svg.py` (writes the SVG you name), no dependencies. From the target repository's root:
 
 ```bash
 SK="${CODEX_HOME:-$HOME/.codex}/skills/repo-readme-generator/scripts"
-python3 "$SK/discover.py" . --out /tmp/readme-facts.json   # facts about the repo
-python3 "$SK/check_drift.py" README.md                     # undocumented or changed since the README was verified
-python3 "$SK/validate_readme.py" README.md                 # structure, links, commands, Mermaid, secrets (exit 1 on errors)
+python3 "$SK/discover.py" . --out /tmp/readme-facts.json        # facts: deps, scripts, services, env vars, data model, tooling
+python3 "$SK/make_svg.py" docs/diagrams/src/architecture.json docs/diagrams/architecture.svg
+python3 "$SK/check_drift.py" README.md --docs docs              # undocumented or changed since the docs were verified
+python3 "$SK/validate_readme.py" README.md                      # one README (exit 1 on errors)
+python3 "$SK/validate_docs.py"                                  # whole suite incl. SVGs and AGENTS.md (exit 1 on errors)
 ```
 
-`validate_readme.py --strict` treats warnings as errors (useful in CI). The validator is static: it does not run the documented commands or render Mermaid, so a clean result does not prove setup works or diagrams render.
+`--strict` (both validators) treats warnings as errors, useful in CI. The validators are static: they do not run the documented commands or render Mermaid, so a clean result does not prove setup works or diagrams render. `tests/repo-readme-generator/fixtures/node-app-docs/` is a small worked example of a full suite.
 
 | Symptom | Fix |
 |---|---|
 | `discover.py` warns "stopped at 20000 files" | You pointed it at a folder that is not a single repository. Run it at the project root, or pass `--max-files`. |
 | Many `path-ref` warnings | They flag backticked paths that do not exist (often generated output). Keep them if intended. |
-| `check_drift.py` says baseline unknown | The folder is not a git repo, or the README was never committed. Drift is judged from file contents only. |
+| `check_drift.py` says baseline unknown | The folder is not a git repo, or the docs were never committed. Drift is judged from file contents only. |
+| SVG labels collide or lines cross awkwardly | Reorder `nodes` or adjust `groups` in the spec, then re-run `make_svg.py`. |
+| `AGENTS.md` warning about 32 KiB | Codex reads only the first 32 KiB by default. Move detail into `docs/` and link it. |
 
 ## Development
 

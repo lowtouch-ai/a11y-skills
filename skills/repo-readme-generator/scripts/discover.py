@@ -15,6 +15,12 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+for _stream in (sys.stdout, sys.stderr):      # never crash on characters the console encoding cannot show (e.g. cp1252 on Windows)
+    try:
+        _stream.reconfigure(errors="replace")
+    except Exception:
+        pass
+
 IGNORE_DIRS = {".git", "node_modules", "venv", ".venv", "env", "__pycache__", "dist", "build", "target", ".next", ".nuxt", ".cache", "vendor",
                "coverage", ".tox", ".idea", ".mypy_cache", ".pytest_cache", ".gradle", "bin", "obj", ".terraform", "out", ".turbo", "site-packages"}
 MAX_READ = 400_000
@@ -33,6 +39,29 @@ ENTRY_NAMES = {"main.py", "app.py", "wsgi.py", "asgi.py", "manage.py", "__main__
 ENV_PATTERNS = [r"process\.env\.([A-Z][A-Z0-9_]+)", r"process\.env\[['\"]([A-Z][A-Z0-9_]+)['\"]\]", r"import\.meta\.env\.([A-Z][A-Z0-9_]+)",
                 r"os\.environ(?:\.get)?\[?\(?['\"]([A-Z][A-Z0-9_]+)['\"]", r"os\.getenv\(\s*['\"]([A-Z][A-Z0-9_]+)['\"]", r"getenv\(\s*['\"]([A-Z][A-Z0-9_]+)['\"]",
                 r"System\.getenv\(\s*\"([A-Z][A-Z0-9_]+)\"", r"Environment\.GetEnvironmentVariable\(\s*\"([A-Z][A-Z0-9_]+)\"", r"\$\{([A-Z][A-Z0-9_]+)(?::?[-?][^}]*)?\}"]
+QUALITY = re.compile(r"(^|/)(\.eslintrc[^/]*|eslint\.config\.\w+|\.prettierrc[^/]*|prettier\.config\.\w+|ruff\.toml|\.ruff\.toml|\.flake8|mypy\.ini|\.editorconfig|\.pre-commit-config\.yaml|tox\.ini|noxfile\.py|"
+                     r"jest\.config\.\w+|vitest\.config\.\w+|pytest\.ini|\.golangci\.ya?ml|\.rubocop\.yml|commitlint\.config\.\w+|\.husky/[^/]+|renovate\.json|dependabot\.ya?ml|codecov\.ya?ml|\.coveragerc|sonar-project\.properties|checkstyle[^/]*\.xml|\.swiftlint\.yml)$")
+PROJECT_FILES = {"LICENSE", "LICENSE.md", "LICENSE.txt", "MAINTAINERS", "CODEOWNERS", ".github/CODEOWNERS", "SECURITY.md", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md", "CHANGELOG.md", "NOTICE", "GOVERNANCE.md"}
+OBS = re.compile(r"(^|/)(prometheus[^/]*\.ya?ml|otel[^/]*\.ya?ml|grafana/.*|datadog[^/]*\.ya?ml|alert[^/]*rules?\.ya?ml|logstash[^/]*\.conf|fluent[^/]*\.conf|loki[^/]*\.ya?ml)$")
+MODEL_PATTERNS = [(r"^class\s+(\w+)\((?:[\w.]*\bModel|db\.Model)\)", "Django/Flask model"), (r"^class\s+(\w+)\([\w.]*Base\):", "SQLAlchemy model"),
+                  (r"__tablename__\s*=\s*['\"](\w+)", "SQLAlchemy table"), (r"@Entity[\s\S]{0,120}?class\s+(\w+)", "JPA entity"), (r"CREATE TABLE(?: IF NOT EXISTS)?\s+[`\"]?(\w+)", "SQL table"),
+                  (r"mongoose\.model\(\s*['\"](\w+)", "Mongoose model"), (r"sequelize\.define\(\s*['\"](\w+)", "Sequelize model"), (r"^model\s+(\w+)\s*\{", "Prisma model"),
+                  (r"@Entity\([^)]*\)\s*(?:export\s+)?class\s+(\w+)", "TypeORM entity")]
+DEP_CATEGORIES = {
+    "web/framework": ["express", "fastify", "koa", "flask", "fastapi", "django", "spring", "gin", "echo", "rails", "laravel", "next", "react", "vue", "angular", "svelte", "nest", "aspnet"],
+    "database/orm": ["pg", "postgres", "psycopg", "mysql", "sqlite", "mongo", "redis", "sequelize", "typeorm", "prisma", "sqlalchemy", "gorm", "hibernate", "jpa", "entityframework", "npgsql", "knex"],
+    "messaging/jobs": ["kafka", "rabbit", "amqp", "celery", "bull", "sqs", "nats", "pubsub", "socket.io", "stackexchange.redis"],
+    "cloud/infra": ["aws", "boto3", "azure", "google-cloud", "gcp", "firebase", "terraform", "kubernetes", "docker"],
+    "auth/security": ["passport", "jwt", "jsonwebtoken", "oauth", "auth0", "keycloak", "authlib", "bcrypt", "helmet", "cors"],
+    "ml/data": ["torch", "tensorflow", "keras", "jax", "numpy", "pandas", "scipy", "scikit", "sklearn", "onnx", "openvino", "nncf", "transformers", "xgboost", "lightgbm",
+                "mlflow", "wandb", "opencv", "pillow", "matplotlib", "spark", "dask", "airflow", "langchain", "openai", "anthropic", "huggingface"],
+    "configuration": ["hydra", "omegaconf", "pydantic", "dynaconf", "python-dotenv", "dotenv", "viper", "config"],
+    "cli": ["click", "typer", "argparse", "fire", "commander", "yargs", "cobra"],
+    "testing": ["pytest", "jest", "vitest", "mocha", "jasmine", "cypress", "playwright", "karma", "junit", "testng", "phpunit", "xunit", "nunit", "rspec", "minitest", "testing-library"],
+    "tooling": ["eslint", "prettier", "ruff", "black", "flake8", "mypy", "webpack", "vite", "babel", "typescript", "tsc", "nodemon", "gunicorn", "uvicorn"],
+}
+CODE_EXT = {k for k in LANG if k not in (".html", ".css", ".scss", ".sql", ".tf")}
+CONFIG_FILE = re.compile(r"(^|/)(config|configs|conf|settings|cfg)(/|$)|(^|/)(config|settings|application|appsettings|bootstrap)[\w.-]*\.(ya?ml|json|toml|ini|cfg|conf|properties)$|(^|/)\.env[\w.-]*$", re.I)
 ROUTE_PATTERNS = [(r"@(?:app|router|bp|api)\.(get|post|put|delete|patch)\(\s*['\"]([^'\"]+)", "Flask/FastAPI"),
                   (r"@(?:app|bp)\.route\(\s*['\"]([^'\"]+)", "Flask"),
                   (r"\b(?:app|router|server)\.(get|post|put|delete|patch)\(\s*['\"`]([^'\"`]+)", "Express-style"),
@@ -101,6 +130,8 @@ def parse_package_json(p, root):
     return {"file": rel(p, root), "name": d.get("name"), "version": d.get("version"), "description": d.get("description"), "main": d.get("main"),
             "bin": d.get("bin"), "type": d.get("type"), "engines": d.get("engines"), "packageManager": d.get("packageManager"),
             "scripts": d.get("scripts", {}), "workspaces": d.get("workspaces"),
+            "dependency_versions": dict(list(d.get("dependencies", {}).items())[:60]),
+            "dev_dependency_versions": dict(list(d.get("devDependencies", {}).items())[:60]),
             "dependencies": sorted(d.get("dependencies", {}))[:40], "devDependencies": sorted(d.get("devDependencies", {}))[:40],
             "test_deps": sorted(set(deps) & TEST_DEPS)}
 
@@ -119,8 +150,40 @@ def parse_pyproject(p, root):
     poetry = d.get("tool", {}).get("poetry", {})
     return {"file": rel(p, root), "name": pr.get("name") or poetry.get("name"), "version": pr.get("version") or poetry.get("version"),
             "description": pr.get("description") or poetry.get("description"), "requires_python": pr.get("requires-python") or poetry.get("dependencies", {}).get("python"),
+            "dependency_specs": (pr.get("dependencies", []) or [f"{k} {v}" for k, v in poetry.get("dependencies", {}).items()])[:60],
             "scripts": pr.get("scripts") or poetry.get("scripts") or {}, "dependencies": [re.split(r"[<>=!~\[; ]", x)[0] for x in pr.get("dependencies", [])][:40] or sorted(poetry.get("dependencies", {}))[:40],
             "build_backend": d.get("build-system", {}).get("build-backend"), "tools": sorted(d.get("tool", {}))}
+
+
+def parse_go_mod(p, root):
+    t = read(p)
+    return {"file": rel(p, root), "module": (re.search(r"^module\s+(\S+)", t, re.M) or [None, None])[1], "go": (re.search(r"^go\s+(\S+)", t, re.M) or [None, None])[1],
+            "requires": [" ".join(x.split()[:2]) for x in re.findall(r"^\s*(?:require\s+)?([\w./~-]+\s+v[\w.+-]+)", t, re.M)][:60]}
+
+
+def parse_cargo(p, root):
+    try:
+        import tomllib
+        d = tomllib.loads(read(p))
+    except Exception:
+        return {"file": rel(p, root), "note": "tomllib unavailable"}
+    deps = {k: (v if isinstance(v, str) else v.get("version", "*")) for k, v in d.get("dependencies", {}).items()}
+    return {"file": rel(p, root), "name": d.get("package", {}).get("name"), "edition": d.get("package", {}).get("edition"), "dependencies": dict(list(deps.items())[:60])}
+
+
+def parse_pom(p, root):
+    t = read(p)
+    deps = re.findall(r"<dependency>\s*<groupId>([^<]+)</groupId>\s*<artifactId>([^<]+)</artifactId>(?:\s*<version>([^<]+)</version>)?", t)
+    return {"file": rel(p, root), "artifact": (re.search(r"<artifactId>([^<]+)</artifactId>", t) or [None, None])[1],
+            "java": (re.search(r"<(?:java\.version|maven\.compiler\.source|release)>([^<]+)<", t) or [None, None])[1],
+            "dependencies": [f"{g}:{a}" + (f":{v}" if v else "") for g, a, v in deps][:60]}
+
+
+def parse_csproj(p, root):
+    t = read(p)
+    return {"file": rel(p, root), "target": (re.search(r"<TargetFramework>([^<]+)<", t) or [None, None])[1], "sdk": (re.search(r'<Project Sdk="([^"]+)"', t) or [None, None])[1],
+            "output_type": (re.search(r"<OutputType>([^<]+)<", t) or [None, None])[1],
+            "packages": [f"{n}" + (f" {v}" if v else "") for n, v in re.findall(r'<PackageReference Include="([^"]+)"(?:\s+Version="([^"]+)")?', t)][:60]}
 
 
 def parse_makefile(p, root):
@@ -184,6 +247,7 @@ def main():
     def add(kind, v):
         if v: m.setdefault(kind, []).append(v)
     env_vars, entry, routes, tests, readmes, docs, agent_files = {}, [], [], [], [], [], []
+    quality, project_files, data_hints, adr, observability, config_files, shell_scripts = [], [], [], [], [], [], []
     for f in files:
         r = rel(f, root); n = f.name
         if n == "package.json": add("package.json", parse_package_json(f, root))
@@ -193,16 +257,33 @@ def main():
         elif n.startswith("Dockerfile"): add("dockerfile", parse_dockerfile(f, root))
         elif n in (".env.example", ".env.sample", ".env.template") or n.endswith(".env.example"): add("env_files", env_example(f, root))
         elif r.startswith(".github/workflows/") and n.endswith((".yml", ".yaml")): add("ci", parse_workflow(f, root))
-        elif n in ("go.mod", "Cargo.toml", "pom.xml", "Gemfile", "composer.json", "build.gradle", "build.gradle.kts", "mix.exs", "setup.py", "Pipfile", "Jenkinsfile", ".gitlab-ci.yml", "Chart.yaml", "serverless.yml") or n.endswith((".csproj", ".sln")):
+        elif n.endswith(".csproj"): add("dotnet", parse_csproj(f, root))
+        elif n == "go.mod": add("go_mod", parse_go_mod(f, root))
+        elif n == "Cargo.toml": add("cargo", parse_cargo(f, root))
+        elif n == "pom.xml": add("maven", parse_pom(f, root))
+        elif n in ("Gemfile", "composer.json", "build.gradle", "build.gradle.kts", "mix.exs", "setup.py", "Pipfile", "Jenkinsfile", ".gitlab-ci.yml", "Chart.yaml", "serverless.yml") or n.endswith((".csproj", ".sln")):
             add("other_manifests", r)
-        elif re.match(r"requirements.*\.txt$", n): add("requirements", {"file": r, "packages": [re.split(r"[<>=!~\[; ]", l.strip())[0] for l in read(f).splitlines() if l.strip() and not l.startswith(("#", "-"))][:40]})
+        elif re.match(r"requirements.*\.txt$", n): add("requirements", {"file": r, "packages": [re.split(r"[<>=!~\[; ]", l.strip())[0] for l in read(f).splitlines() if l.strip() and not l.startswith(("#", "-"))][:40],
+                                                                  "specs": [l.strip() for l in read(f).splitlines() if l.strip() and not l.startswith(("#", "-"))][:60]})
         if n in {"openapi.yaml", "openapi.yml", "openapi.json", "swagger.json", "swagger.yaml"}: add("api_specs", r)
         if n.lower().startswith("readme"): readmes.append(r)
         if n in ("AGENTS.md", "CLAUDE.md"): agent_files.append(r)
         if n in {".nvmrc", ".python-version", ".tool-versions"}: add("version_files", {"file": r, "content": read(f).strip()[:80]})
         if r.endswith(".tf"): add("terraform", r)
         if n in ENTRY_NAMES: entry.append(r)
-        if re.search(r"(^|/)(tests?|__tests__|spec|e2e)(/|$)|(\.|_)(test|spec)\.\w+$|^test_", r): tests.append(r)
+        if QUALITY.search(r): quality.append(r)
+        if n in PROJECT_FILES or r in PROJECT_FILES or re.match(r"(?i)^(\.github/)?(codeowners|security\.md|code_of_conduct\.md|contributing\.md|changelog\.md|maintainers|license.*)$", r):
+            project_files.append(r)
+        if re.search(r"(^|/)(docs?/(adr|decisions?)|adr|decisions)/", r): adr.append(r)
+        if OBS.search(r): observability.append(r)
+        if re.search(r"(^|/)(migrations?|alembic|db/migrate|prisma)(/|$)|schema\.prisma$|\.sql$", r): data_hints.append({"file": r, "kind": "migration/schema file", "name": n})
+        if f.suffix.lower() in CODE_EXT and re.search(r"(^|/)(tests?|__tests__|spec|e2e)(/|$)|(\.|_)(test|spec)\.\w+$|(^|/)test_[^/]*$", r) and not r.startswith(("data/", "datasets/")):
+            tests.append(r)
+        if CONFIG_FILE.search(r) and f.suffix.lower() in (".yaml", ".yml", ".json", ".toml", ".ini", ".cfg", ".conf", ".properties", ".xml", "") and n not in ("package.json", "package-lock.json", "tsconfig.json"):
+            config_files.append(r)
+        if f.suffix.lower() in (".sh", ".ps1", ".bat", ".cmd", ".bash"):
+            first = next((l.strip().lstrip("#:REMrem ").strip() for l in read(f, 20000).splitlines()[:6] if l.strip() and not l.startswith("#!")), "")
+            shell_scripts.append({"file": r, "note": first[:100]})
         if r.startswith(("docs/", "doc/")): docs.append(r)
         if f.suffix.lower() in (".yaml", ".yml") and re.search(r"^kind:\s*(Deployment|Service|StatefulSet|Ingress|CronJob)", read(f), re.M): add("kubernetes", r)
         if f.suffix.lower() in LANG or n in ("Dockerfile", "docker-compose.yml") or n.startswith(".env"):
@@ -210,6 +291,9 @@ def main():
             if not txt: continue
             if f.suffix.lower() in LANG and f.suffix.lower() not in (".html", ".css", ".scss", ".sql"):
                 if re.search(r"if __name__\s*==\s*['\"]__main__['\"]", txt) and r not in entry: entry.append(r)
+                for pat, kind in MODEL_PATTERNS:
+                    for nm in re.findall(pat, txt)[:15]:
+                        data_hints.append({"file": r, "kind": kind, "name": nm})
                 for pat in ENV_PATTERNS:
                     for v in re.findall(pat, txt):
                         env_vars.setdefault(v, set()).add(r)
@@ -219,10 +303,27 @@ def main():
             elif n.startswith("docker-compose") or n.startswith("compose"):
                 for v in re.findall(r"\$\{([A-Z][A-Z0-9_]+)", txt): env_vars.setdefault(v, set()).add(r)
     facts["manifests"] = m
+    names = set()
+    for pj in m.get("package.json", []): names |= set(pj["dependency_versions"]) | set(pj["dev_dependency_versions"])
+    for py in m.get("pyproject", []): names |= {re.split(r"[<>=!~\[; ]", x)[0].lower() for x in py.get("dependency_specs", [])}
+    for rq in m.get("requirements", []): names |= {x.lower() for x in rq["packages"]}
+    for g in m.get("go_mod", []): names |= {x.split()[0] for x in g["requires"]}
+    for c in m.get("cargo", []): names |= set(c.get("dependencies", {}))
+    for mv in m.get("maven", []): names |= set(mv["dependencies"])
+    for dn in m.get("dotnet", []): names |= {x.split()[0].lower() for x in dn["packages"]}
+    facts["stack_hints"] = {cat: sorted(n for n in names if any(k in n.lower() for k in keys)) for cat, keys in DEP_CATEGORIES.items()}
+    facts["stack_hints"] = {k: v for k, v in facts["stack_hints"].items() if v}
+    facts["quality_tools"] = sorted(set(quality))
+    facts["project_files"] = sorted(set(project_files))
+    facts["adr_files"] = sorted(set(adr))[:30]
+    facts["observability_files"] = sorted(set(observability))[:30]
+    facts["data_model_hints"] = data_hints[:120]
+    facts["config_files"] = sorted(set(config_files))[:60]
+    facts["shell_scripts"] = sorted(shell_scripts, key=lambda x: x["file"])[:40]
     facts["entry_points"] = sorted(entry)
     facts["env_vars"] = {k: sorted(v)[:5] for k, v in sorted(env_vars.items())}
     facts["route_hints"] = routes[:80]
-    facts["tests"] = {"files": len(tests), "examples": tests[:15]}
+    facts["tests"] = {"files": len(tests), "examples": tests[:15], "note": "name-based heuristic; open the files to confirm they are real automated tests (evaluation or demo scripts can match)"}
     facts["existing_readmes"] = readmes
     facts["agent_instruction_files"] = agent_files
     facts["docs_files"] = docs[:30]

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 876 298" width="876" height="298" role="img" aria-labelledby="t d" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<title id="t">orders-api architecture</title>
+<desc id="d">Components: HTTP clients; API server; Orders module; PostgreSQL; Redis. Connections: HTTP clients to API server (HTTP :3000); API server to PostgreSQL (pg pool); API server to Redis (configured, unused); API server to Orders module (not imported yet).</desc>
+<rect width="100%" height="100%" fill="#ffffff"/>
+<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/></marker></defs>
+<rect x="30" y="76" width="153" height="112" rx="12" fill="#f7f8fa" stroke="#d0d7de"/>
+<text x="44" y="98" font-size="12" font-weight="700" fill="#57606a" letter-spacing=".04em">CLIENTS</text>
+<rect x="300" y="20" width="234" height="224" rx="12" fill="#f7f8fa" stroke="#d0d7de"/>
+<text x="314" y="42" font-size="12" font-weight="700" fill="#57606a" letter-spacing=".04em">APPLICATION</text>
+<rect x="700" y="20" width="146" height="224" rx="12" fill="#f7f8fa" stroke="#d0d7de"/>
+<text x="714" y="42" font-size="12" font-weight="700" fill="#57606a" letter-spacing=".04em">DATA STORES</text>
+<path d="M165.0,147.0 C263.3,147.0 263.3,99.0 361.6,99.0" fill="none" stroke="#4b5563" stroke-width="1.5" marker-end="url(#arr)"/>
+<path d="M471.6,93.0 C595.0,93.0 595.0,99.0 718.3,99.0" fill="none" stroke="#4b5563" stroke-width="1.5" marker-end="url(#arr)"/>
+<path d="M471.6,105.0 C595.0,105.0 595.0,195.0 718.3,195.0" fill="none" stroke="#4b5563" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arr)"/>
+<path d="M416.6,130.0 C416.6,154.0 416.6,140.0 416.6,164.0" fill="none" stroke="#4b5563" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arr)"/>
+<rect x="48" y="124" width="117" height="46" rx="8" fill="#f3e8fd" stroke="#8e4ec6" stroke-width="1.5"/>
+<text x="106.5" y="151.0" text-anchor="middle" font-weight="600" fill="#1f2937">HTTP clients</text>
+<rect x="362" y="68" width="110" height="62" rx="8" fill="#e8f0fe" stroke="#3b6fd4" stroke-width="1.5"/>
+<text x="417.0" y="97.0" text-anchor="middle" font-weight="600" fill="#1f2937">API server</text>
+<text x="417.0" y="113.0" text-anchor="middle" font-size="11" fill="#4b5563">src/server.js</text>
+<rect x="318" y="164" width="198" height="62" rx="8" fill="#f6f6f6" stroke="#8a8a8a" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="417.0" y="193.0" text-anchor="middle" font-weight="600" fill="#1f2937">Orders module (Planned)</text>
+<text x="417.0" y="209.0" text-anchor="middle" font-size="11" fill="#4b5563">src/orders.js (not wired)</text>
+<path d="M718,76 a55.0,8 0 0 1 110,0 v46 a55.0,8 0 0 1 -110,0 z" fill="#e6f4ea" stroke="#2f8f4e" stroke-width="1.5"/>
+<path d="M718,76 a55.0,8 0 0 0 110,0" fill="none" stroke="#2f8f4e" stroke-width="1.5"/>
+<text x="773.0" y="101.0" text-anchor="middle" font-weight="600" fill="#1f2937">PostgreSQL</text>
+<text x="773.0" y="117.0" text-anchor="middle" font-size="11" fill="#4b5563">db service</text>
+<path d="M718,172 a55.0,8 0 0 1 110,0 v46 a55.0,8 0 0 1 -110,0 z" fill="#e6f4ea" stroke="#2f8f4e" stroke-width="1.5"/>
+<path d="M718,172 a55.0,8 0 0 0 110,0" fill="none" stroke="#2f8f4e" stroke-width="1.5"/>
+<text x="773.0" y="197.0" text-anchor="middle" font-weight="600" fill="#1f2937">Redis</text>
+<text x="773.0" y="213.0" text-anchor="middle" font-size="11" fill="#4b5563">cache service</text>
+<rect x="227.0" y="114.0" width="72.6" height="18" rx="4" fill="#ffffff" fill-opacity=".95" stroke="#e5e7eb"/><text x="263.3" y="127.0" text-anchor="middle" font-size="11" fill="#374151">HTTP :3000</text>
+<rect x="568.1" y="87.0" width="53.8" height="18" rx="4" fill="#ffffff" fill-opacity=".95" stroke="#e5e7eb"/><text x="595.0" y="100.0" text-anchor="middle" font-size="11" fill="#374151">pg pool</text>
+<rect x="533.6" y="141.0" width="122.7" height="18" rx="4" fill="#ffffff" fill-opacity=".95" stroke="#e5e7eb"/><text x="595.0" y="154.0" text-anchor="middle" font-size="11" fill="#374151">configured, unused</text>
+<rect x="361.5" y="138.0" width="110.2" height="18" rx="4" fill="#ffffff" fill-opacity=".95" stroke="#e5e7eb"/><text x="416.6" y="151.0" text-anchor="middle" font-size="11" fill="#374151">not imported yet</text>
+<rect x="30" y="272" width="14" height="14" rx="3" fill="#f3e8fd" stroke="#8e4ec6"/><text x="50" y="283" font-size="11" fill="#374151">Client</text>
+<rect x="109.56923076923078" y="272" width="14" height="14" rx="3" fill="#f6f6f6" stroke="#8a8a8a"/><text x="129.56923076923078" y="283" font-size="11" fill="#374151">Planned</text>
+<rect x="195.40000000000003" y="272" width="14" height="14" rx="3" fill="#e8f0fe" stroke="#3b6fd4"/><text x="215.40000000000003" y="283" font-size="11" fill="#374151">Service</text>
+<rect x="281.2307692307693" y="272" width="14" height="14" rx="3" fill="#e6f4ea" stroke="#2f8f4e"/><text x="301.2307692307693" y="283" font-size="11" fill="#374151">Data store</text>
+</svg>

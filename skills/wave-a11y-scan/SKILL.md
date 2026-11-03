@@ -26,7 +26,7 @@ Useful options: `--format md,html,json` (default all), `--viewport 1280x900`, `-
 
 Outputs in `--out`: `report.md`, `report.html` (hand to the client), and one `<page>.json` per URL with every instance (selector, HTML snippet, contrast colors and ratios).
 
-Exit code 2 means a page returned a bot-protection or access-denied screen (for example a Cloudflare "Just a moment..." page). Those results are invalid. Do not report them; tell the user, and try a logged-in `--storage-state`, a different network, or ask for a staging URL.
+Exit codes: `0` ok; `2` a page returned a bot-protection or access-denied screen (for example a Cloudflare "Just a moment..." page); `3` at least one URL could not be loaded (it is listed under "Pages that could not be scanned" in the report, and the other pages are still reported; if none loaded, no report is written). A URL without a scheme is scanned as `https://`. Blocked-page results are invalid. Do not report them; tell the user, and try a logged-in `--storage-state`, a different network, or ask for a staging URL.
 
 ## Reading the results
 

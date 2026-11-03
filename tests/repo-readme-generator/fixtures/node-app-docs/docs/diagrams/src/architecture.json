@@ -1,0 +1,13 @@
+{"title":"orders-api architecture","direction":"LR",
+ "groups":[{"id":"clients","label":"Clients"},{"id":"app","label":"Application"},{"id":"data","label":"Data stores"}],
+ "nodes":[
+  {"id":"http","label":"HTTP clients","group":"clients","kind":"client"},
+  {"id":"api","label":"API server","sub":"src/server.js","group":"app","kind":"service"},
+  {"id":"ord","label":"Orders module","sub":"src/orders.js (not wired)","group":"app","kind":"planned"},
+  {"id":"db","label":"PostgreSQL","sub":"db service","group":"data","kind":"store"},
+  {"id":"cache","label":"Redis","sub":"cache service","group":"data","kind":"store"}],
+ "edges":[
+  {"from":"http","to":"api","label":"HTTP :3000"},
+  {"from":"api","to":"db","label":"pg pool"},
+  {"from":"api","to":"cache","label":"configured, unused","style":"dashed"},
+  {"from":"api","to":"ord","label":"not imported yet","style":"dashed"}]}

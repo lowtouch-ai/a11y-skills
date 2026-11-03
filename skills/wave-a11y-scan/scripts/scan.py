@@ -6,12 +6,19 @@ Usage:
 """
 import argparse
 import datetime as dt
+import hashlib
 import html
 import json
 import re
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
+
+for _stream in (sys.stdout, sys.stderr):      # never crash on characters the console encoding cannot show (e.g. cp1252 on Windows)
+    try:
+        _stream.reconfigure(errors="replace")
+    except Exception:
+        pass
 
 HERE = Path(__file__).resolve().parent
 SKILL = HERE.parent
@@ -59,18 +66,48 @@ def s508(rule_id):
     return "Yes (WCAG 2.0 " + "/".join(sorted({x["level"] for x in s if x["sc"] in req})) + ")" if req else "No (WCAG 2.1+ only)"
 
 
+class ScanError(Exception):
+    """A problem with one page or with the environment, phrased for the person running the scan."""
+
+
+SETUP_HINT = "python3 -m pip install -r {req} && python3 -m playwright install chromium"
+
+
+def normalise_url(u):
+    if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", u) or u.startswith(("about:", "data:")):
+        return u
+    print(f"  note: '{u}' has no scheme; scanning https://{u}", file=sys.stderr)
+    return "https://" + u
+
+
 def scan(url, a):
-    from playwright.sync_api import sync_playwright
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        raise ScanError("Playwright is not installed. Run: " + SETUP_HINT.format(req=SKILL / "requirements.txt"))
     w, h = (int(x) for x in a.viewport.split("x"))
-    with sync_playwright() as p:
-        b = p.chromium.launch(args=["--disable-blink-features=AutomationControlled"])
-        ctx = b.new_context(viewport={"width": w, "height": h}, locale="en-US",
-                            storage_state=a.storage_state or None, user_agent=a.user_agent or None)
-        pg = ctx.new_page()
-        pg.goto(url, wait_until="load", timeout=a.timeout * 1000)
-        pg.wait_for_timeout(a.wait)
-        res = pg.evaluate(CHECKS_JS)
-        b.close()
+    try:
+        with sync_playwright() as p:
+            b = p.chromium.launch(args=["--disable-blink-features=AutomationControlled"])
+            try:
+                ctx = b.new_context(viewport={"width": w, "height": h}, locale="en-US",
+                                    storage_state=a.storage_state or None, user_agent=a.user_agent or None)
+                pg = ctx.new_page()
+                pg.goto(url, wait_until="load", timeout=a.timeout * 1000)
+                pg.wait_for_timeout(a.wait)
+                res = pg.evaluate(CHECKS_JS)
+            finally:
+                b.close()
+    except ScanError:
+        raise
+    except Exception as e:                      # Playwright raises its own error types; turn them into one readable line
+        msg = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
+        msg = re.sub(r"^\w+\.\w+:\s*", "", msg)                    # drop Playwright's "Page.goto: " prefix
+        if "Executable doesn't exist" in str(e) or "playwright install" in str(e):
+            raise ScanError("Chromium is not installed for Playwright. Run: python3 -m playwright install chromium")
+        if type(e).__name__ == "TimeoutError":
+            raise ScanError(f"timed out after {a.timeout}s loading the page (raise --timeout, or check the URL is reachable)")
+        raise ScanError(msg)
     meta = res.pop("_meta")
     blocked = bool(re.match(r"(just a moment|attention required|access denied)", meta["title"], re.I))
     return {"url": url, "scanned_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -122,13 +159,15 @@ def sc_rollup(pages):
     return dict(sorted(roll.items(), key=lambda kv: [int(p) for p in kv[0].split(".")]))
 
 
-def build_md(pages, a):
+def build_md(pages, a, failures=()):
     o = [f"# Accessibility scan report{': ' + a.title if a.title else ''}", "",
          f"Generated {dt.date.today().isoformat()} by wave-a11y-scan {VERSION} (WAVE-style checks, WCAG 2.x A/AA, Section 508 mapping).", "",
          "## How to read this report", "",
          "- **Errors** and **Contrast Errors** are failures. **Alerts** need a person to confirm. Features, Structure and ARIA are informational.",
          "- Automated checks cover only part of WCAG. A page with no errors is not proven accessible. Manual keyboard and screen-reader testing is still required.",
          "- Every finding lists the WCAG success criteria WAVE associates with it. Section 508 (revised, 2017) incorporates WCAG 2.0 Level A and AA, so criteria added in WCAG 2.1+ are marked as not required by 508.", ""]
+    if failures:
+        o += ["## Pages that could not be scanned", ""] + [f"- `{u}`: {why}" for u, why in failures] + ["", "These pages are not covered by this report.", ""]
     if len(pages) > 1:
         o += ["## Summary across pages", "", "| Page | " + " | ".join(l for _, l, _ in CATEGORIES) + " |", "|---|" + "---:|" * len(CATEGORIES)]
         for pg in pages:
@@ -190,8 +229,10 @@ def build_html(md_text, a):
 
 
 def slug(url):
+    """Readable, length-limited file name; the hash keeps URLs that differ only by query string apart."""
     u = urlparse(url)
-    return re.sub(r"[^a-z0-9]+", "-", (u.netloc + u.path).lower()).strip("-") or "page"
+    base = re.sub(r"[^a-z0-9]+", "-", (u.netloc + u.path).lower()).strip("-")[-60:].strip("-") or "page"
+    return f"{base}-{hashlib.sha1(url.encode('utf-8')).hexdigest()[:8]}"
 
 
 def main():
@@ -207,12 +248,24 @@ def main():
     ap.add_argument("--storage-state", help="Playwright storage-state JSON for logged-in scans")
     ap.add_argument("--user-agent")
     a = ap.parse_args()
+    fmts = {f.strip() for f in a.format.split(",") if f.strip()}
+    if not fmts or fmts - {"md", "html", "json"}:
+        ap.error(f"--format must be a comma-separated subset of md,html,json (got '{a.format}')")
+    if not re.fullmatch(r"\d{2,5}x\d{2,5}", a.viewport):
+        ap.error(f"--viewport must look like 1280x900 (got '{a.viewport}')")
+    if a.storage_state and not Path(a.storage_state).is_file():
+        ap.error(f"--storage-state file not found: {a.storage_state}")
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
-    fmts = set(a.format.split(","))
-    pages = []
+    pages, failures = [], []
     for u in a.urls:
+        u = normalise_url(u)
         print(f"Scanning {u} ...", file=sys.stderr)
-        pg = scan(u, a)
+        try:
+            pg = scan(u, a)
+        except ScanError as e:
+            print(f"  FAILED: {e}", file=sys.stderr)
+            failures.append((u, str(e)))
+            continue
         pages.append(pg)
         if pg["blocked"]:
             print(f"  WARNING: {u} returned a bot-protection/denied page ('{pg['meta']['title']}').", file=sys.stderr)
@@ -220,13 +273,18 @@ def main():
         print("  " + "  ".join(f"{LABEL[k]}={c[k]}" for k in c), file=sys.stderr)
         if "json" in fmts:
             (out / f"{slug(u)}.json").write_text(json.dumps(pg, indent=1), encoding="utf-8")
-    md = build_md(pages, a)
+    if not pages:
+        print("No page could be scanned; no report written.", file=sys.stderr)
+        return 3
+    md = build_md(pages, a, failures)
     if "md" in fmts:
         (out / "report.md").write_text(md, encoding="utf-8")
     if "html" in fmts:
         (out / "report.html").write_text(build_html(md, a), encoding="utf-8")
     print(f"Report written to {out.resolve()}", file=sys.stderr)
-    return 2 if any(p["blocked"] for p in pages) else 0
+    if failures:
+        print(f"WARNING: {len(failures)} of {len(a.urls)} page(s) could not be scanned and are listed in the report.", file=sys.stderr)
+    return 3 if failures else (2 if any(p["blocked"] for p in pages) else 0)
 
 
 if __name__ == "__main__":

@@ -18,13 +18,16 @@ Mark every statement that cannot be verified from the repository: `TBD` (unknown
 Name, purpose, problem solved, intended users, capabilities, how the system behaves at a high level.
 Evidence: package/pyproject description, existing docs, entry points, routes.
 
+## Documentation
+(Suite scope only; see doc-suite.md.) Table of every document with a one-line description, linking `AGENTS.md` and each `docs/*.md`. Add "Not applicable: <doc> (<reason>)" for skipped ones. The README keeps summaries; detail lives in those files.
+
 ## Technology Stack
 | Layer | Technology | Purpose | Source |
 |---|---|---|---|
 Languages, frameworks, datastores, messaging, build tools, test tools, infra. Versions only if pinned in a manifest.
 
 ## High-Level Logical Architecture
-One Mermaid `flowchart TB` or `LR` (see mermaid-guide.md) with subgraphs: Clients, Entry points, Services, Internal modules, Data stores, External integrations.
+One Mermaid `flowchart TB` or `LR` (see mermaid-guide.md), or an SVG generated with `make_svg.py` (see svg-guide.md) with subgraphs: Clients, Entry points, Services, Internal modules, Data stores, External integrations.
 Then 3 to 8 bullets explaining the main flows and relationships shown, each naming real files or modules.
 
 ## Component Inventory
@@ -38,7 +41,7 @@ One short annotation per entry, only for entries that exist.
 
 ## Application Execution Flow
 Startup, configuration loading, initialization, request/job processing, persistence, integrations, shutdown.
-Add a Mermaid `sequenceDiagram` when two or more components interact in a non-trivial order.
+Add a Mermaid `sequenceDiagram` (or generated SVG) when two or more components interact in a non-trivial order.
 
 ## Development Prerequisites
 Runtimes and versions (from .nvmrc, engines, requires-python, go.mod, toolchain files), package managers, tools, containers, databases, accounts, how secrets are supplied (never the values).

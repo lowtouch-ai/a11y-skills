@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 514 280" width="514" height="280" role="img" aria-labelledby="t d" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13">
+<title id="t">GET /orders flow</title>
+<desc id="d">Participants: Client, API server, PostgreSQL. Steps: 1. Client to API server: GET /orders; 2. API server to PostgreSQL: select * from orders; 3. PostgreSQL to API server: rows; 4. API server to Client: 200 JSON.</desc>
+<rect width="100%" height="100%" fill="#ffffff"/>
+<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/></marker></defs>
+<line x1="80" y1="56" x2="80" y2="260" stroke="#9ca3af" stroke-dasharray="4 4"/>
+<rect x="30" y="20" width="100" height="36" rx="8" fill="#e8f0fe" stroke="#3b6fd4" stroke-width="1.5"/><text x="80" y="42" text-anchor="middle" font-weight="600" fill="#1f2937">Client</text>
+<line x1="226" y1="56" x2="226" y2="260" stroke="#9ca3af" stroke-dasharray="4 4"/>
+<rect x="175" y="20" width="102" height="36" rx="8" fill="#e8f0fe" stroke="#3b6fd4" stroke-width="1.5"/><text x="226" y="42" text-anchor="middle" font-weight="600" fill="#1f2937">API server</text>
+<line x1="433" y1="56" x2="433" y2="260" stroke="#9ca3af" stroke-dasharray="4 4"/>
+<rect x="382" y="20" width="102" height="36" rx="8" fill="#e8f0fe" stroke="#3b6fd4" stroke-width="1.5"/><text x="433" y="42" text-anchor="middle" font-weight="600" fill="#1f2937">PostgreSQL</text>
+<line x1="80" y1="94" x2="226" y2="94" stroke="#4b5563" stroke-width="1.5" marker-end="url(#arr)"/>
+<text x="153" y="88" text-anchor="middle" font-size="12" fill="#1f2937">GET /orders</text>
+<line x1="226" y1="132" x2="433" y2="132" stroke="#4b5563" stroke-width="1.5" marker-end="url(#arr)"/>
+<text x="329" y="126" text-anchor="middle" font-size="12" fill="#1f2937">select * from orders</text>
+<line x1="433" y1="170" x2="226" y2="170" stroke="#4b5563" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arr)"/>
+<text x="329" y="164" text-anchor="middle" font-size="12" fill="#1f2937">rows</text>
+<line x1="226" y1="208" x2="80" y2="208" stroke="#4b5563" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arr)"/>
+<text x="153" y="202" text-anchor="middle" font-size="12" fill="#1f2937">200 JSON</text>
+</svg>

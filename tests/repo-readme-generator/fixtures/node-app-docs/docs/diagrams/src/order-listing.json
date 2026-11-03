@@ -1,0 +1,3 @@
+{"type":"sequence","title":"GET /orders flow",
+ "participants":[{"id":"C","label":"Client"},{"id":"A","label":"API server"},{"id":"D","label":"PostgreSQL"}],
+ "messages":[{"from":"C","to":"A","label":"GET /orders"},{"from":"A","to":"D","label":"select * from orders"},{"from":"D","to":"A","label":"rows","style":"dashed"},{"from":"A","to":"C","label":"200 JSON","style":"dashed"}]}

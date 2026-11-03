@@ -10,6 +10,13 @@ Run `scripts/discover.py` first, then read the files it points to. The script fi
 - CI/CD and infra: .github/workflows, .gitlab-ci.yml, Jenkinsfile, terraform, helm, k8s manifests, serverless.yml.
 - Tests: test directories, runner config (pytest.ini, jest.config, vitest.config, tox.ini).
 
+## Extra facts for a documentation suite
+`discover.py` also reports: `stack_hints` (frameworks, databases, messaging, cloud, auth, tooling found in dependencies), per-manifest dependency versions, `data_model_hints` (SQL tables, ORM models, migrations, Prisma schemas), `quality_tools` (linters, formatters, pre-commit, coverage), `config_files` (YAML/JSON/TOML/INI under config dirs, `.env*`), `shell_scripts` (candidate setup/run commands that have no manifest entry), `adr_files`, `observability_files`, `project_files` (LICENSE, MAINTAINERS, CODEOWNERS, SECURITY, CONTRIBUTING). Use them as pointers, then read the files. Treat `tests` and `stack_hints` as heuristics: confirm in the files before stating them.
+- **Design decisions:** read ADRs, long code comments, commit messages (`git log --oneline` is safe), and PR templates before inferring rationale.
+- **Data model:** open each model or migration listed; record fields, keys, relationships.
+- **Security:** read auth middleware, CORS and TLS settings, secret handling, and note hardcoded sample credentials by file only.
+- **Operations:** read health checks, logging setup, monitoring and alert configs, backup scripts.
+
 ## Tracing architecture (do this, do not guess)
 1. **Entry points**: from `entry_points`, manifest `bin`/`main`/`scripts`, Dockerfile CMD, compose commands. Open each and note what it starts.
 2. **Modules**: list top-level source directories. For each, read the main file and the imports that cross directory boundaries. A component is a unit with its own responsibility and a clear location, not every file.

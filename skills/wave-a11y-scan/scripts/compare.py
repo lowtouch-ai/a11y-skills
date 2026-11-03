@@ -11,8 +11,27 @@ import json
 import sys
 from pathlib import Path
 
-scan = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-wave = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+for _stream in (sys.stdout, sys.stderr):      # never crash on characters the console encoding cannot show (e.g. cp1252 on Windows)
+    try:
+        _stream.reconfigure(errors="replace")
+    except Exception:
+        pass
+
+def load(path, what):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise SystemExit(f"compare: cannot read {what} '{path}': {e}")
+
+
+if len(sys.argv) != 3:
+    raise SystemExit("usage: compare.py SCAN.json WAVE_COUNTS.json")
+scan = load(sys.argv[1], "scan result")
+wave = load(sys.argv[2], "WAVE counts")
+if not isinstance(scan, dict) or "results" not in scan:
+    raise SystemExit("compare: the first file is not a scan result written by scan.py (no 'results' key)")
+if not isinstance(wave, dict) or not all(isinstance(v, int) for v in wave.values()):
+    raise SystemExit('compare: WAVE counts must be a JSON object of item id to integer, e.g. {"alt_missing": 29}')
 mine = {rid: len(v) for cat in scan["results"].values() for rid, v in cat.items()}
 ids = sorted(set(mine) | set(wave))
 same = 0

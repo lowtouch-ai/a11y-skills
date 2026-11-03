@@ -7,7 +7,7 @@ Add this block to the repository's `AGENTS.md` (create the file if the user want
 
 The root `README.md` documents architecture, setup, build, run, test and configuration. Keep it accurate as part of every change.
 
-Update the README (use the `repo-readme-generator` skill in update mode) when a change:
+Update the README and the affected files under `docs/` (use the `repo-readme-generator` skill in update mode) when a change:
 - adds, removes, renames or re-wires a service, module, package or major directory;
 - changes an entry point, port, route, public API, event, or CLI command;
 - adds or changes a build, run, test or lint command, or a package.json / Makefile / pyproject script;
@@ -16,9 +16,10 @@ Update the README (use the `repo-readme-generator` skill in update mode) when a 
 - changes Dockerfiles, compose files, CI/CD workflows or infrastructure code.
 
 Before finishing such a change:
-1. `python <skill-dir>/scripts/check_drift.py README.md` and fix what it reports.
+1. `python <skill-dir>/scripts/check_drift.py README.md --docs docs` and fix what it reports.
 2. Edit only the affected README sections; preserve accurate existing text.
-3. `python <skill-dir>/scripts/validate_readme.py README.md` and resolve errors.
+3. `python <skill-dir>/scripts/validate_docs.py` (or `validate_readme.py README.md` if there is no `docs/` folder) and resolve errors.
+   If you changed a diagram spec in `docs/diagrams/src/`, re-run `make_svg.py` for it.
 4. Mention in the final message which README sections changed.
 
 Never document behavior that is not implemented; mark it `Planned` or `TBD`.
