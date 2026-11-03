@@ -8,7 +8,7 @@ root = here.parent.parent
 S = root / "skills/repo-readme-generator/scripts"
 fx = here / "fixtures"
 fails = []
-import shutil, tempfile, xml.etree.ElementTree as ET
+import re, shutil, tempfile, xml.etree.ElementTree as ET
 tmp = Path(tempfile.mkdtemp())
 
 def run(*a):
@@ -211,6 +211,30 @@ check("drift: system variables such as PWD are not reported", "`PWD`" not in dro
 dd = json.loads(run(S / "discover.py", docs_fx).stdout)
 check("discover: dependency versions", dd["manifests"]["package.json"][0]["dependency_versions"].get("express") == "^4.19.0")
 check("discover: stack hints", "express" in dd["stack_hints"].get("web/framework", []) and "pg" in dd["stack_hints"].get("database/orm", []))
+
+# ---- discovery false positives seen on a large monorepo: barrel index files, shell-local variables, JS template literals
+fp = tmp / "fp"
+(fp / "lib/widgets").mkdir(parents=True)
+(fp / "server").mkdir()
+(fp / "lib/index.ts").write_text("export * from './widgets';\nexport { A } from './a';\n")
+(fp / "lib/widgets/index.ts").write_text("import { A } from '../a';\nexport default A;\n")
+(fp / "server/index.js").write_text("const app = require('express')();\napp.listen(process.env.RATE_LIMIT || 3000);\n")
+(fp / "build.sh").write_text("#!/bin/bash\nUI_DIR=$(pwd)\nfor T in a b; do echo ${T}; done\necho ${UI_DIR} ${DEPLOY_TOKEN} $NODE_PATH\n")
+(fp / "lib/Header.tsx").write_text("const h = `${HEADER_HEIGHT}px`;\n")
+fpd = json.loads(run(S / "discover.py", fp).stdout)
+check("discover: a re-export-only index.ts is not an entry point", "lib/index.ts" not in fpd["entry_points"] and "lib/widgets/index.ts" not in fpd["entry_points"], str(fpd["entry_points"]))
+check("discover: an index.js that starts a server is an entry point", "server/index.js" in fpd["entry_points"], str(fpd["entry_points"]))
+check("discover: variables a shell script assigns itself are not env vars", not {"UI_DIR", "T"} & set(fpd["env_vars"]), str(fpd["env_vars"]))
+check("discover: variables a shell script only reads are env vars", {"DEPLOY_TOKEN", "NODE_PATH"} <= set(fpd["env_vars"]), str(fpd["env_vars"]))
+check("discover: ${X} in a TSX template literal is not an env var", "HEADER_HEIGHT" not in fpd["env_vars"], str(fpd["env_vars"]))
+check("discover: process.env reads are still found", "RATE_LIMIT" in fpd["env_vars"], str(fpd["env_vars"]))
+
+# ---- the skill instructs the model to audit its claims against the code before reporting
+skill_md = (S.parent / "SKILL.md").read_text(encoding="utf-8")
+check("skill: workflow has a verify-against-code step before the report", skill_md.index("### 5. Verify against the code") < skill_md.index("### 7. Report"))
+check("skill: verification checklist exists and is referenced", (S.parent / "references/verification-checklist.md").is_file() and "references/verification-checklist.md" in skill_md)
+check("skill: every referenced file exists", all((S.parent / "references" / m).is_file() for m in re.findall(r"references/([\w.-]+\.md)", skill_md)))
+check("skill: report requires verification results", "Verification results" in skill_md)
 
 print("\nOK" if not fails else f"\n{len(fails)} FAILED: {fails}")
 sys.exit(1 if fails else 0)

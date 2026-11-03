@@ -38,7 +38,12 @@ ENTRY_NAMES = {"main.py", "app.py", "wsgi.py", "asgi.py", "manage.py", "__main__
                "server.ts", "main.ts", "app.ts", "main.go", "main.rs", "lib.rs", "Program.cs", "Main.java", "Application.java", "index.php", "config.ru"}
 ENV_PATTERNS = [r"process\.env\.([A-Z][A-Z0-9_]+)", r"process\.env\[['\"]([A-Z][A-Z0-9_]+)['\"]\]", r"import\.meta\.env\.([A-Z][A-Z0-9_]+)",
                 r"os\.environ(?:\.get)?\[?\(?['\"]([A-Z][A-Z0-9_]+)['\"]", r"os\.getenv\(\s*['\"]([A-Z][A-Z0-9_]+)['\"]", r"getenv\(\s*['\"]([A-Z][A-Z0-9_]+)['\"]",
-                r"System\.getenv\(\s*\"([A-Z][A-Z0-9_]+)\"", r"Environment\.GetEnvironmentVariable\(\s*\"([A-Z][A-Z0-9_]+)\"", r"\$\{([A-Z][A-Z0-9_]+)(?::?[-?][^}]*)?\}"]
+                r"System\.getenv\(\s*\"([A-Z][A-Z0-9_]+)\"", r"Environment\.GetEnvironmentVariable\(\s*\"([A-Z][A-Z0-9_]+)\""]
+SHELL_VAR = re.compile(r"\$\{([A-Z][A-Z0-9_]+)(?::?[-?][^}]*)?\}|\$([A-Z][A-Z0-9_]+)\b")
+SHELL_EXT = {".sh", ".bash"}
+SHELL_ASSIGN = r"(?:^|[;&(\s])(?:export\s+|local\s+|readonly\s+|declare\s+(?:-\w+\s+)?|for\s+|read\s+(?:-\w+\s+)*)?{v}(?:=|\s+in\b)"
+INDEX_NAMES = {"index.js", "index.ts"}
+BOOTSTRAP = re.compile(r"\.listen\(|createServer\(|bootstrapApplication|platformBrowserDynamic|bootstrapModule|createRoot\(|ReactDOM\.render|\bexpress\(\)|new Vue\(|createApp\(|^#!|NestFactory|process\.argv|commander|yargs", re.M)
 QUALITY = re.compile(r"(^|/)(\.eslintrc[^/]*|eslint\.config\.\w+|\.prettierrc[^/]*|prettier\.config\.\w+|ruff\.toml|\.ruff\.toml|\.flake8|mypy\.ini|\.editorconfig|\.pre-commit-config\.yaml|tox\.ini|noxfile\.py|"
                      r"jest\.config\.\w+|vitest\.config\.\w+|pytest\.ini|\.golangci\.ya?ml|\.rubocop\.yml|commitlint\.config\.\w+|\.husky/[^/]+|renovate\.json|dependabot\.ya?ml|codecov\.ya?ml|\.coveragerc|sonar-project\.properties|checkstyle[^/]*\.xml|\.swiftlint\.yml)$")
 PROJECT_FILES = {"LICENSE", "LICENSE.md", "LICENSE.txt", "MAINTAINERS", "CODEOWNERS", ".github/CODEOWNERS", "SECURITY.md", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md", "CHANGELOG.md", "NOTICE", "GOVERNANCE.md"}
@@ -228,6 +233,17 @@ def env_example(p, root):
     return {"file": rel(p, root), "vars": [m.group(1) for m in re.finditer(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=", read(p), re.M)]}
 
 
+def is_bootstrap(f):
+    """index.js/ts is usually a barrel file that only re-exports; keep it as an entry point only if it starts something."""
+    return bool(BOOTSTRAP.search(read(f, 60000)))
+
+
+def shell_env(txt):
+    """Variables a shell script reads from its environment: ${VAR}/$VAR that the script never assigns itself."""
+    names = {a or b for a, b in SHELL_VAR.findall(txt)}
+    return {v for v in names if not re.search(SHELL_ASSIGN.format(v=re.escape(v)), txt, re.M)}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("path", nargs="?", default=".")
@@ -270,7 +286,7 @@ def main():
         if n in ("AGENTS.md", "CLAUDE.md"): agent_files.append(r)
         if n in {".nvmrc", ".python-version", ".tool-versions"}: add("version_files", {"file": r, "content": read(f).strip()[:80]})
         if r.endswith(".tf"): add("terraform", r)
-        if n in ENTRY_NAMES: entry.append(r)
+        if n in ENTRY_NAMES and (n not in INDEX_NAMES or is_bootstrap(f)): entry.append(r)
         if QUALITY.search(r): quality.append(r)
         if n in PROJECT_FILES or r in PROJECT_FILES or re.match(r"(?i)^(\.github/)?(codeowners|security\.md|code_of_conduct\.md|contributing\.md|changelog\.md|maintainers|license.*)$", r):
             project_files.append(r)
@@ -297,6 +313,8 @@ def main():
                 for pat in ENV_PATTERNS:
                     for v in re.findall(pat, txt):
                         env_vars.setdefault(v, set()).add(r)
+                if f.suffix.lower() in SHELL_EXT:
+                    for v in shell_env(txt): env_vars.setdefault(v, set()).add(r)
                 for pat, fw in ROUTE_PATTERNS:
                     for hit in re.finditer(pat, txt):
                         g = hit.groups(); routes.append({"file": r, "framework": fw, "method": g[0] if len(g) > 1 else None, "path": g[-1]})

@@ -29,7 +29,7 @@ RELEVANT = re.compile(r"(^|/)(package\.json|pyproject\.toml|requirements.*\.txt|
                       r"main\.\w+|app\.\w+|server\.\w+|index\.\w+|AGENTS\.md)$|(^|/)(src|app|lib|cmd|services|api|server|backend|frontend|packages|infra|deploy|k8s|helm)/")
 import validate_readme as vr  # noqa: E402  (same folder)
 
-SYSTEM_VARS = {"HOME", "PATH", "PWD", "USER", "SHELL", "TERM", "LANG", "TMPDIR", "TEMP", "HOSTNAME", "UID", "OLDPWD", "LOGNAME", "EDITOR", "DISPLAY", "IFS", "PS1", "SHLVL"}
+SYSTEM_VARS = {"HOME", "PATH", "PWD", "USER", "SHELL", "TERM", "LANG", "TMPDIR", "TEMP", "HOSTNAME", "UID", "OLDPWD", "LOGNAME", "EDITOR", "DISPLAY", "IFS", "PS1", "SHLVL", "NODE_ENV"}
 SKIP = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", "target", ".next", "site-packages"}
 MARK = re.compile(r"<!--\s*repo-readme-generator:.*?commit=([0-9a-f]{7,40}).*?-->")
 

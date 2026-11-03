@@ -84,15 +84,25 @@ Checks: required sections, anchors and relative links, referenced paths, shell c
 
 Optional, with approval and network: render Mermaid with `npx -y @mermaid-js/mermaid-cli`. Otherwise say "Mermaid not rendered".
 
-### 5. AGENTS.md integration
+### 5. Verify against the code
+Scripts check form (links, anchors, structure); they cannot tell whether a sentence is true. Before reporting, audit what you wrote against the repository, following `references/verification-checklist.md`:
+- Re-open the source for every version, port, environment variable, command, path, count, endpoint and diagram edge you stated, and confirm it matches. Recompute counts (files, endpoints, tests) instead of trusting your first pass.
+- Check each document's headline claims (what the component does, how it starts, what it depends on) against the code, not against another document you wrote.
+- Fix every mismatch. Anything you cannot confirm becomes `TBD`, `Planned` or is deleted; never leave a plausible guess.
+- Where a reviewer subagent is available, give it only the docs and the repository (not your conclusions) and have it list claims it cannot confirm.
+- In update mode also confirm that untouched text still matches the changed code.
+Record the result in the report: claims checked, corrected, downgraded to `TBD`.
+
+### 6. AGENTS.md integration
 In suite scope, create or update `AGENTS.md` from the template (it is part of the suite). In README scope, offer to add the README-maintenance rules from `references/agents-md-snippet.md` to `AGENTS.md`, and apply them only if the user agrees, preserving existing content.
 
-### 6. Report
+### 7. Report
 End with a short summary:
 - Scope, mode, and files created or changed (sections for README edits).
 - Components documented; diagrams generated (Mermaid or SVG, with paths).
 - Build, start and test commands included, and whether each was only read from a file or actually run.
 - Documents skipped as not applicable, and missing or `TBD` information the team should supply.
+- Verification results: how many claims you audited against the code, what you corrected or downgraded, and what you could not check.
 - Validation results and limitations (what was not run or rendered). Never claim a check you did not perform.
 
 ## Quality bar
@@ -105,4 +115,4 @@ End with a short summary:
 ## Files
 
 - `scripts/discover.py` gathers repository facts. `scripts/make_svg.py` renders architecture and sequence diagrams to SVG. `scripts/validate_readme.py` validates one README. `scripts/validate_docs.py` validates the whole suite. `scripts/check_drift.py` finds what is undocumented or changed since the docs were last verified.
-- `references/readme-template.md`, `doc-suite.md`, `agents-md-template.md`, `agents-md-snippet.md`, `discovery-checklist.md`, `mermaid-guide.md`, `svg-guide.md`.
+- `references/readme-template.md`, `doc-suite.md`, `agents-md-template.md`, `agents-md-snippet.md`, `discovery-checklist.md`, `verification-checklist.md`, `mermaid-guide.md`, `svg-guide.md`.
