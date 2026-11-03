@@ -7,14 +7,9 @@ description: Scan web pages for accessibility problems using the same checks as 
 
 Runs the WAVE rule set (110 items, six categories) against live pages in headless Chromium and writes a Markdown, HTML and JSON report. Every finding carries its WCAG 2.x success criteria and a Section 508 note.
 
-## Prerequisites (once per machine)
+## Prerequisites
 
-```bash
-python3 -m pip install -r <skill-dir>/requirements.txt
-python3 -m playwright install chromium
-```
-
-`<skill-dir>` is the folder holding this file (usually `~/.codex/skills/wave-a11y-scan`). If `import playwright` fails or Chromium is missing, run the two commands above before scanning.
+None to run by hand. On first use `scan.py` installs Playwright (`pip`) and downloads Chromium (about 150 MB, once). Pass `--no-install` to disable this; the manual commands are then `python3 -m pip install -r <skill-dir>/requirements.txt` and `python3 -m playwright install chromium` (`<skill-dir>` is usually `~/.codex/skills/wave-a11y-scan`).
 
 ## Run a scan
 

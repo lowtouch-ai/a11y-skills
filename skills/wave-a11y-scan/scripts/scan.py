@@ -10,6 +10,7 @@ import hashlib
 import html
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -71,6 +72,28 @@ class ScanError(Exception):
 
 
 SETUP_HINT = "python3 -m pip install -r {req} && python3 -m playwright install chromium"
+
+
+def _run_setup(cmd, what):
+    print(f"  setup: {what} ...", file=sys.stderr)
+    if subprocess.run(cmd, stdout=sys.stderr).returncode != 0:
+        raise ScanError(f"automatic setup failed ({what}). Run manually: " + SETUP_HINT.format(req=SKILL / "requirements.txt"))
+
+
+def ensure_setup():
+    """Install Playwright and its Chromium on first use (skipped with --no-install)."""
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        _run_setup([sys.executable, "-m", "pip", "install", "-r", str(SKILL / "requirements.txt")], "installing Playwright")
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            if Path(p.chromium.executable_path).exists():
+                return
+    except ImportError:
+        raise ScanError("Playwright was installed but cannot be imported; re-run the command")
+    _run_setup([sys.executable, "-m", "playwright", "install", "chromium"], "downloading Chromium (about 150 MB, once)")
 
 
 def normalise_url(u):
@@ -247,6 +270,7 @@ def main():
     ap.add_argument("--max-instances", type=int, default=10, help="examples listed per rule in md/html")
     ap.add_argument("--storage-state", help="Playwright storage-state JSON for logged-in scans")
     ap.add_argument("--user-agent")
+    ap.add_argument("--no-install", action="store_true", help="do not install Playwright/Chromium automatically")
     a = ap.parse_args()
     fmts = {f.strip() for f in a.format.split(",") if f.strip()}
     if not fmts or fmts - {"md", "html", "json"}:
@@ -255,6 +279,11 @@ def main():
         ap.error(f"--viewport must look like 1280x900 (got '{a.viewport}')")
     if a.storage_state and not Path(a.storage_state).is_file():
         ap.error(f"--storage-state file not found: {a.storage_state}")
+    if not a.no_install:
+        try:
+            ensure_setup()
+        except ScanError as e:
+            raise SystemExit(f"scan: {e}")
     out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
     pages, failures = [], []
     for u in a.urls:
