@@ -39,7 +39,7 @@ ENTRY_NAMES = {"main.py", "app.py", "wsgi.py", "asgi.py", "manage.py", "__main__
 ENV_PATTERNS = [r"process\.env\.([A-Z][A-Z0-9_]+)", r"process\.env\[['\"]([A-Z][A-Z0-9_]+)['\"]\]", r"import\.meta\.env\.([A-Z][A-Z0-9_]+)",
                 r"os\.environ(?:\.get)?\[?\(?['\"]([A-Z][A-Z0-9_]+)['\"]", r"os\.getenv\(\s*['\"]([A-Z][A-Z0-9_]+)['\"]", r"getenv\(\s*['\"]([A-Z][A-Z0-9_]+)['\"]",
                 r"System\.getenv\(\s*\"([A-Z][A-Z0-9_]+)\"", r"Environment\.GetEnvironmentVariable\(\s*\"([A-Z][A-Z0-9_]+)\""]
-SHELL_VAR = re.compile(r"\$\{([A-Z][A-Z0-9_]+)(?::?[-?][^}]*)?\}|\$([A-Z][A-Z0-9_]+)\b")
+SHELL_VAR = re.compile(r"\$\{([A-Z][A-Z0-9_]+)(?::?[-?][^}]*)?\}|\$([A-Z][A-Z0-9_]+)\b(?!\{)")
 SHELL_EXT = {".sh", ".bash"}
 SHELL_ASSIGN = r"(?:^|[;&(\s])(?:export\s+|local\s+|readonly\s+|declare\s+(?:-\w+\s+)?|for\s+|read\s+(?:-\w+\s+)*)?{v}(?:=|\s+in\b)"
 INDEX_NAMES = {"index.js", "index.ts"}
