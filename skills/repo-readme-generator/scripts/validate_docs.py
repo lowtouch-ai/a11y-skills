@@ -10,6 +10,7 @@ Usage: python validate_docs.py [--root REPO] [--docs-dir docs] [--json] [--stric
 import argparse
 import json
 import os
+import subprocess
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -70,6 +71,17 @@ def check_svg(p, root, referenced, items):
         add("WARN", "svg", "Diagram is not referenced from any Markdown file")
 
 
+def git_head(root):
+    """HEAD commit if root is itself the top of a git work tree, else None."""
+    try:
+        top = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=10).stdout.strip()
+        if not top or Path(top).resolve() != root:
+            return None
+        return subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10).stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
@@ -125,6 +137,31 @@ def main():
     for rel in texts:
         if rel.startswith(a.docs_dir + "/") and os.path.normpath(rel) not in referenced:
             items.append({"level": "WARN", "check": "index", "message": "Not linked from README.md or any other doc", "file": rel, "line": None})
+    # suite gate: README.md and AGENTS.md are deliverables of a suite and must reflect it
+    suite_docs = sorted(r_ for r_ in texts if r_.startswith(a.docs_dir + "/"))
+    if suite_docs:
+        if "README.md" not in texts:
+            items.append({"level": "ERROR", "check": "suite", "message": "docs/ exists but there is no root README.md; the README is the index of the suite", "file": "README.md", "line": None})
+        else:
+            readme_links = {os.path.normpath(l).replace("\\", "/") for l in (m.group(1) for m in link_re.finditer(texts["README.md"])) if not re.match(r"^(https?:|mailto:|tel:)", l)}
+            for rel in suite_docs:
+                if rel.endswith(".md") and os.path.normpath(rel) not in readme_links:
+                    items.append({"level": "ERROR", "check": "suite", "message": f"README.md does not link {rel}; add it to the Documentation index", "file": "README.md", "line": None})
+            mk = re.search(r"<!--\s*repo-readme-generator:.*?commit=([0-9a-f]{7,40}).*?-->", texts["README.md"])
+            head = git_head(root)
+            if not mk:
+                items.append({"level": "WARN", "check": "suite", "message": "README.md has no 'repo-readme-generator: commit=... date=...' footer; add it so drift can be checked later", "file": "README.md", "line": None})
+            elif head and not head.startswith(mk.group(1)) and not mk.group(1).startswith(head[:7]):
+                items.append({"level": "WARN", "check": "suite", "message": f"README.md footer says commit {mk.group(1)[:9]} but HEAD is {head[:9]}; refresh the footer after re-verifying", "file": "README.md", "line": None})
+            newest = max(suite_docs, key=lambda r_: (root / r_).stat().st_mtime)
+            if (root / "README.md").stat().st_mtime + 1 < (root / newest).stat().st_mtime:
+                items.append({"level": "WARN", "check": "suite", "message": f"README.md is older than {newest}; it was not re-checked after the docs changed", "file": "README.md", "line": None})
+        if "AGENTS.md" not in texts:
+            items.append({"level": "ERROR", "check": "suite", "message": "docs/ exists but there is no AGENTS.md; a suite includes it", "file": "AGENTS.md", "line": None})
+        else:
+            for rel in suite_docs:
+                if rel.endswith(".md") and rel.rsplit("/", 1)[-1] not in texts["AGENTS.md"]:
+                    items.append({"level": "WARN", "check": "suite", "message": f"AGENTS.md documentation map does not mention {rel}", "file": "AGENTS.md", "line": None})
     # SVGs and diagram specs
     d = root / a.docs_dir
     svgs = sorted(p for p in root.rglob("*.svg") if not (set(p.relative_to(root).parts) & {"node_modules", ".git", "dist", "build"})

@@ -17,7 +17,8 @@ Produces consistent, architecture-focused documentation grounded in what the rep
 3. **Safe checks only.** Read files and run read-only commands. Do not install dependencies, start servers or containers, run migrations, or call external services without approval.
 4. **Honest verification.** Report which checks you ran and which you did not. Commands taken from manifests but not executed are "documented from <file>, not executed".
 5. **No secrets.** Variable names, descriptions and placeholder defaults only; never real values, and never copy credentials found in samples (name the file instead).
-6. **Preserve what is right.** In update mode keep accurate existing text and the author's voice; change only what is stale, missing or wrong. Preserve existing `AGENTS.md` rules.
+6. **README and AGENTS.md are always deliverables in suite scope.** A suite run is not finished until `README.md` and `AGENTS.md` have been rewritten or updated to match the final documents, even when a README already exists and looks fine. Never stop after writing `docs/`.
+7. **Preserve what is right.** In update mode keep accurate existing text and the author's voice; change only what is stale, missing or wrong. Preserve existing `AGENTS.md` rules.
 
 ## Choose scope and mode
 
@@ -87,18 +88,23 @@ Optional, with approval and network: render Mermaid with `npx -y @mermaid-js/mer
 ### 5. Verify against the code
 Scripts check form (links, anchors, structure); they cannot tell whether a sentence is true. Before reporting, audit what you wrote against the repository, following `references/verification-checklist.md`:
 - Re-open the source for every version, port, environment variable, command, path, count, endpoint and diagram edge you stated, and confirm it matches. Recompute counts (files, endpoints, tests) instead of trusting your first pass.
+- Apply this to every document written so far; step 6 then re-checks `README.md` and `AGENTS.md` against the finished suite.
 - Check each document's headline claims (what the component does, how it starts, what it depends on) against the code, not against another document you wrote.
 - Fix every mismatch. Anything you cannot confirm becomes `TBD`, `Planned` or is deleted; never leave a plausible guess.
 - Where a reviewer subagent is available, give it only the docs and the repository (not your conclusions) and have it list claims it cannot confirm.
 - In update mode also confirm that untouched text still matches the changed code.
 Record the result in the report: claims checked, corrected, downgraded to `TBD`.
 
-### 6. AGENTS.md integration
-In suite scope, create or update `AGENTS.md` from the template (it is part of the suite). In README scope, offer to add the README-maintenance rules from `references/agents-md-snippet.md` to `AGENTS.md`, and apply them only if the user agrees, preserving existing content.
+### 6. Finalize README.md and AGENTS.md
+Do this last in suite scope, after every other document is written and verified, so both files describe the finished suite. It is required, not optional:
+- **README.md:** open it and update it from the final documents and code, not from memory of the old README. The Documentation index must link every file under `docs/` (and name documents skipped as not applicable). Overview, technology stack, component inventory, repository structure, setup/build/run/test commands, configuration, APIs, deployment, troubleshooting and known limitations must match the docs and the code. Fix stale sections, keep accurate text, refresh the `repo-readme-generator` footer (commit and date).
+- **AGENTS.md:** create or update from `references/agents-md-template.md`: exact commands with working directories, conventions, boundaries, gotchas, a documentation map that lists every doc, and the documentation-maintenance rules. Preserve existing rules.
+- Re-read both files once against the finished `docs/` and the code (versions, commands, ports, paths, names identical everywhere), then run `validate_docs.py` again. It errors if the README does not link every doc or `AGENTS.md` is missing, and warns if the README is older than the docs or its footer commit is stale. Resolve each.
+In README scope, offer to add the README-maintenance rules from `references/agents-md-snippet.md` to `AGENTS.md`, and apply them only if the user agrees, preserving existing content.
 
 ### 7. Report
 End with a short summary:
-- Scope, mode, and files created or changed (sections for README edits).
+- Scope, mode, and files created or changed (sections for README edits). In suite scope state explicitly that `README.md` and `AGENTS.md` were updated, and what changed in each.
 - Components documented; diagrams generated (Mermaid or SVG, with paths).
 - Build, start and test commands included, and whether each was only read from a file or actually run.
 - Documents skipped as not applicable, and missing or `TBD` information the team should supply.

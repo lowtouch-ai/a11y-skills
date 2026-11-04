@@ -237,5 +237,26 @@ check("skill: verification checklist exists and is referenced", (S.parent / "ref
 check("skill: every referenced file exists", all((S.parent / "references" / m).is_file() for m in re.findall(r"references/([\w.-]+\.md)", skill_md)))
 check("skill: report requires verification results", "Verification results" in skill_md)
 
+# ---- suite gate: README.md and AGENTS.md must be updated along with docs/
+import os, time
+gate = tmp / "gate"
+shutil.copytree(docs_fx, gate)
+(gate / "docs/extra.md").write_text("# Extra\n\n> Added after the README was written.\n\n" + "Line of content.\n" * 14)
+g1 = run(S / "validate_docs.py", "--root", gate, "--json")
+gi = json.loads(g1.stdout)
+check("suite gate: a docs file the README does not link is an error", any(i["level"] == "ERROR" and i["check"] == "suite" and "docs/extra.md" in i["message"] for i in gi), g1.stdout[-400:])
+check("suite gate: AGENTS.md map missing the new doc is flagged", any(i["check"] == "suite" and i["file"] == "AGENTS.md" and "extra.md" in i["message"] for i in gi))
+(gate / "docs/extra.md").touch()
+os.utime(gate / "README.md", (time.time() - 100, time.time() - 100))
+g2 = json.loads(run(S / "validate_docs.py", "--root", gate, "--json").stdout)
+check("suite gate: README older than the newest doc is flagged", any(i["check"] == "suite" and "older than" in i["message"] for i in g2), str(g2)[-300:])
+(gate / "AGENTS.md").unlink()
+g3 = json.loads(run(S / "validate_docs.py", "--root", gate, "--json").stdout)
+check("suite gate: missing AGENTS.md is an error", any(i["level"] == "ERROR" and i["file"] == "AGENTS.md" for i in g3))
+(gate / "README.md").unlink()
+g4 = json.loads(run(S / "validate_docs.py", "--root", gate, "--json").stdout)
+check("suite gate: missing README.md is an error when docs/ exists", any(i["level"] == "ERROR" and i["file"] == "README.md" for i in g4))
+check("skill: suite scope requires finalizing README.md and AGENTS.md", "### 6. Finalize README.md and AGENTS.md" in skill_md and "README and AGENTS.md are always deliverables" in skill_md)
+
 print("\nOK" if not fails else f"\n{len(fails)} FAILED: {fails}")
 sys.exit(1 if fails else 0)

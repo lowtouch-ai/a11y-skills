@@ -62,7 +62,9 @@ Rules:
 1. `discover.py`, then read the key files (see `discovery-checklist.md`).
 2. Build one internal model: components, flows, data, config, interfaces, dependencies, conventions.
 3. Write in this order so later docs can link to earlier ones: `codebase-map` → `architecture` (with diagrams) → `tech-stack-and-dependencies` → `data-model` → `api-reference` → `configuration` → `development-guide` → `testing` → `deployment-and-operations` → `security` → `design-and-decisions` → `troubleshooting` → `glossary` → `AGENTS.md` → `README.md` (index last, so it links only what exists).
-4. Validate the whole suite with `validate_docs.py`; fix; re-run.
+4. Verify the documents against the code (`verification-checklist.md`).
+5. **Finalize `README.md` and `AGENTS.md` last, even if a README already exists**: the Documentation index links every file in `docs/`, the summary sections, commands and versions match the finished docs and code, the AGENTS.md documentation map lists every doc, and the README footer commit/date is refreshed. A suite is not complete until both files are updated.
+6. Validate the whole suite with `validate_docs.py` (it errors when the README does not link every doc or `AGENTS.md` is missing); fix; re-run.
 
 ## Update mode for a suite
 
