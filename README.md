@@ -24,6 +24,7 @@ The skills in this repository are reusable building blocks for that kind of work
 | Skill | What it does |
 |---|---|
 | [`wave-a11y-scan`](skills/wave-a11y-scan) | WAVE-style accessibility scan of web pages with a client-ready report (WCAG 2.x, Section 508 note). |
+| [`appsec-static-audit`](skills/appsec-static-audit) | Source-code-only security audit (OWASP, SSO, secrets, IaC, SBOM, PII/FTI) with a timestamped enterprise report mapped to NIST 800-53, IRS Pub 1075 and EOTSS. |
 | [`repo-readme-generator`](skills/repo-readme-generator) | Creates or updates a repo's README, or a full documentation suite with `AGENTS.md` and diagrams, from verified evidence. |
 
 ## Install
@@ -36,6 +37,10 @@ $skill-installer install https://github.com/lowtouch-ai/krithi-skills/tree/main/
 
 ```
 $skill-installer install https://github.com/lowtouch-ai/krithi-skills/tree/main/skills/repo-readme-generator
+```
+
+```
+$skill-installer install https://github.com/lowtouch-ai/krithi-skills/tree/main/skills/appsec-static-audit
 ```
 
 `wave-a11y-scan` installs its own dependencies (Playwright and Chromium, about 150 MB) the first time it runs.
@@ -52,9 +57,45 @@ $wave-a11y-scan scan https://example.com
 $repo-readme-generator create the README for this repo
 ```
 
+```
+$appsec-static-audit audit this repository for security
+```
+
+`appsec-static-audit` needs only Python 3 and git; it makes no network calls and writes `security-audit/security-audit-report_<timestamp>.md` plus an SBOM.
+
 For the full documentation suite: `$repo-readme-generator document this repo fully`
+
+## Uninstall
+
+Skills are installed as folders under `~/.codex/skills/` (or `$CODEX_HOME/skills/` if you set `CODEX_HOME`). To remove one, delete its folder and restart Codex.
+
+### From inside Codex
+
+`$skill-installer` can only list and install skills; it has no uninstall command. You can still ask Codex to do the removal in plain language:
+
+```
+Delete the skill folder ~/.codex/skills/appsec-static-audit
+```
+
+Codex runs the delete for you. The folder is outside your project, so Codex asks you to approve the command. Restart Codex afterwards so the skill list refreshes. Do not remove the skills in `~/.codex/skills/.system/` (for example `skill-installer`); Codex manages those.
+
+### From the terminal
+
+```
+rm -rf ~/.codex/skills/wave-a11y-scan
+rm -rf ~/.codex/skills/repo-readme-generator
+rm -rf ~/.codex/skills/appsec-static-audit
+```
+
+On Windows (PowerShell):
+
+```
+Remove-Item -Recurse -Force "$env:USERPROFILE\.codex\skills\appsec-static-audit"
+```
+
+If you use Codex inside WSL, the skills live in the WSL home directory, not the Windows one. Files the skills wrote into your projects (for example `a11y-report/`, `security-audit/`) are not removed with the skill; delete them separately if you no longer need them. `wave-a11y-scan` also leaves Playwright and its Chromium download in the pip and Playwright caches; remove them with `python3 -m pip uninstall playwright` and by deleting `~/.cache/ms-playwright`.
 
 ## More
 
-- Skill details: [`wave-a11y-scan/SKILL.md`](skills/wave-a11y-scan/SKILL.md), [`repo-readme-generator/SKILL.md`](skills/repo-readme-generator/SKILL.md)
+- Skill details: [`wave-a11y-scan/SKILL.md`](skills/wave-a11y-scan/SKILL.md), [`repo-readme-generator/SKILL.md`](skills/repo-readme-generator/SKILL.md), [`appsec-static-audit/SKILL.md`](skills/appsec-static-audit/SKILL.md)
 - Automated checks do not prove a page is accessible; manual keyboard and screen-reader testing is still required.

@@ -1,0 +1,74 @@
+{
+  "_notes": [
+    "Control families follow NIST SP 800-53 Rev. 5. IRS Publication 1075 Section 9.3 organises its requirements by NIST family (9.3.1 AC, 9.3.3 AU, 9.3.5 CM, 9.3.7 IA, 9.3.14 RA, 9.3.15 SA, 9.3.16 SC, 9.3.17 SI).",
+    "Confirm section numbers against the Pub 1075 revision and EOTSS standard versions the customer is audited against, and edit this file. EOTSS entries with id=null have a confirmed topic but an unconfirmed standard number; the report marks them with an asterisk.",
+    "Add more frameworks (PCI DSS, CJIS, SOC 2, ISO 27001, MARS-E) as JSON files in frameworks/ or pass --framework FILE."
+  ],
+  "domains": {
+    "owasp": {
+      "nist": [["SI-10", "Information Input Validation"], ["SA-11", "Developer Testing and Evaluation"], ["SA-8", "Security and Privacy Engineering Principles"], ["SC-7", "Boundary Protection"], ["SC-18", "Mobile Code"]],
+      "irs1075": [["9.3.17", "System and Information Integrity (SI-10)"], ["9.3.15", "System and Services Acquisition (SA-11)"]],
+      "eotss": [{"id": null, "title": "Secure System Development / Application Security"}, {"id": "IS.010", "title": "Vulnerability / Risk Management"}]
+    },
+    "access": {
+      "nist": [["AC-2", "Account Management"], ["AC-3", "Access Enforcement"], ["AC-5", "Separation of Duties"], ["AC-6", "Least Privilege"]],
+      "irs1075": [["9.3.1", "Access Control (AC-2, AC-3, AC-5, AC-6): FTI limited to authorized personnel with need-to-know"]],
+      "eotss": [{"id": "IS.003", "title": "Access Management"}]
+    },
+    "sso": {
+      "nist": [["IA-2", "Identification and Authentication (Organizational Users)"], ["IA-5", "Authenticator Management"], ["IA-8", "Identification and Authentication (Non-Organizational Users)"], ["SC-23", "Session Authenticity"], ["AC-17", "Remote Access"]],
+      "irs1075": [["9.3.7", "Identification and Authentication (IA-2, IA-5, IA-8)"], ["9.3.1", "Access Control (AC-17)"]],
+      "eotss": [{"id": "IS.003", "title": "Access Management (authentication system controls)"}]
+    },
+    "session": {
+      "nist": [["AC-12", "Session Termination"], ["AC-11", "Device Lock / Session Lock"], ["AC-10", "Concurrent Session Control"], ["SC-23", "Session Authenticity"], ["SC-8", "Transmission Confidentiality and Integrity"]],
+      "irs1075": [["9.3.1", "Access Control (AC-11, AC-12): session lock and termination"], ["9.3.16", "System and Communications Protection (SC-23)"]],
+      "eotss": [{"id": "IS.003", "title": "Access Management (session controls)"}]
+    },
+    "mfa": {
+      "nist": [["IA-2(1)", "MFA to Privileged Accounts"], ["IA-2(2)", "MFA to Non-Privileged Accounts"], ["IA-2(6)", "Access to Accounts: Separate Device"], ["AC-17", "Remote Access"]],
+      "irs1075": [["9.3.7", "Identification and Authentication (IA-2(1), IA-2(2)): multi-factor for remote and privileged access to FTI systems"]],
+      "eotss": [{"id": "IS.003", "title": "Access Management (multi-factor authentication)"}]
+    },
+    "secrets": {
+      "nist": [["IA-5(7)", "No Embedded Unencrypted Static Authenticators"], ["IA-5", "Authenticator Management"], ["SC-12", "Cryptographic Key Establishment and Management"], ["SC-28", "Protection of Information at Rest"], ["CM-6", "Configuration Settings"]],
+      "irs1075": [["9.3.7", "Identification and Authentication (IA-5)"], ["9.3.16", "System and Communications Protection (SC-12, SC-28)"]],
+      "eotss": [{"id": "IS.003", "title": "Access Management (credential handling)"}, {"id": null, "title": "Cryptographic Management (key management)"}]
+    },
+    "deps": {
+      "nist": [["RA-5", "Vulnerability Monitoring and Scanning"], ["SI-2", "Flaw Remediation"], ["SA-22", "Unsupported System Components"], ["CM-8", "System Component Inventory"], ["SR-3", "Supply Chain Controls and Processes"], ["SR-4", "Provenance"]],
+      "irs1075": [["9.3.14", "Risk Assessment (RA-5)"], ["9.3.17", "System and Information Integrity (SI-2)"], ["9.3.15", "System and Services Acquisition (SA-22)"]],
+      "eotss": [{"id": "IS.010", "title": "Vulnerability / Risk Management (patching)"}, {"id": "IS.004", "title": "Asset Management (inventory)"}]
+    },
+    "crypto": {
+      "nist": [["SC-13", "Cryptographic Protection"], ["SC-12", "Cryptographic Key Establishment and Management"], ["SC-8", "Transmission Confidentiality and Integrity"], ["SC-8(1)", "Cryptographic Protection (in transit)"], ["IA-7", "Cryptographic Module Authentication"]],
+      "irs1075": [["9.3.16", "System and Communications Protection (SC-8, SC-12, SC-13): FIPS 140-validated cryptography for FTI in transit and at rest"]],
+      "eotss": [{"id": null, "title": "Cryptographic Management"}, {"id": "IS.006", "title": "Communication and Network Security (transmission security)"}]
+    },
+    "data": {
+      "nist": [["SC-28", "Protection of Information at Rest"], ["SC-28(1)", "Cryptographic Protection (at rest)"], ["SI-12", "Information Management and Retention"], ["AC-4", "Information Flow Enforcement"], ["MP-6", "Media Sanitization"], ["SI-11", "Error Handling"]],
+      "irs1075": [["9.3.16", "System and Communications Protection (SC-28): encrypt FTI at rest"], ["9.3.17", "System and Information Integrity (SI-12): retention and disposal of FTI"], ["9.3.10", "Media Protection (MP-6): disposal / sanitization of FTI"], ["Sec. 4", "Secure Storage of FTI (confirm section in the customer's revision)"]],
+      "eotss": [{"id": null, "title": "Data Classification and Protection / Privacy"}, {"id": null, "title": "Cryptographic Management"}]
+    },
+    "api": {
+      "nist": [["AC-3", "Access Enforcement"], ["IA-2", "Identification and Authentication"], ["SI-10", "Information Input Validation"], ["SC-5", "Denial-of-Service Protection"], ["SC-7", "Boundary Protection"]],
+      "irs1075": [["9.3.1", "Access Control (AC-3)"], ["9.3.7", "Identification and Authentication (IA-2)"], ["9.3.17", "System and Information Integrity (SI-10)"], ["9.3.16", "System and Communications Protection (SC-5, SC-7)"]],
+      "eotss": [{"id": "IS.003", "title": "Access Management"}, {"id": null, "title": "Secure System Development / Application Security"}]
+    },
+    "iac": {
+      "nist": [["CM-2", "Baseline Configuration"], ["CM-6", "Configuration Settings"], ["CM-7", "Least Functionality"], ["SC-7", "Boundary Protection"], ["SC-8", "Transmission Confidentiality and Integrity"], ["SC-28", "Protection of Information at Rest"], ["AC-6", "Least Privilege"], ["AU-12", "Audit Record Generation"]],
+      "irs1075": [["9.3.5", "Configuration Management (CM-2, CM-6, CM-7)"], ["9.3.16", "System and Communications Protection (SC-7, SC-8, SC-28)"], ["9.3.1", "Access Control (AC-6)"]],
+      "eotss": [{"id": "IS.006", "title": "Communication and Network Security"}, {"id": "IS.012", "title": "Operations Management (secure configuration)"}, {"id": "IS.003", "title": "Access Management (least privilege)"}]
+    },
+    "logging": {
+      "nist": [["AU-2", "Event Logging"], ["AU-3", "Content of Audit Records"], ["AU-6", "Audit Record Review, Analysis, and Reporting"], ["AU-9", "Protection of Audit Information"], ["AU-11", "Audit Record Retention"], ["AU-12", "Audit Record Generation"], ["SI-4", "System Monitoring"]],
+      "irs1075": [["9.3.3", "Audit and Accountability (AU-2, AU-3, AU-6, AU-9, AU-11, AU-12): audit all access to FTI; retain records per Pub 1075"]],
+      "eotss": [{"id": "IS.012", "title": "Operations Management (logging and monitoring)"}, {"id": "IS.020", "title": "Incident Response (detection and reporting)"}]
+    },
+    "errors": {
+      "nist": [["SI-11", "Error Handling"], ["CM-6", "Configuration Settings"], ["SC-24", "Fail in Known State"]],
+      "irs1075": [["9.3.17", "System and Information Integrity (SI-11)"], ["9.3.5", "Configuration Management (CM-6)"]],
+      "eotss": [{"id": "IS.012", "title": "Operations Management"}, {"id": null, "title": "Secure System Development / Application Security"}]
+    }
+  }
+}

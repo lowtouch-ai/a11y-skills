@@ -1,0 +1,9 @@
+{
+  "name": "PCI DSS v4.0 (example)",
+  "description": "Template for adding a customer-specific framework. Files starting with '_' are ignored unless passed with --framework. Rename (drop the underscore) to load automatically. Verify every requirement number before use.",
+  "domains": {
+    "secrets": [["8.3.2", "Strong cryptography renders authentication factors unreadable"], ["6.2.4", "Software engineering techniques prevent common attacks"]],
+    "crypto": [["4.2.1", "Strong cryptography for PAN transmission"], ["3.5.1", "PAN rendered unreadable wherever stored"]],
+    "logging": [["10.2.1", "Audit logs capture access to cardholder data and administrative actions"]]
+  }
+}

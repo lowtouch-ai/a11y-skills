@@ -1,0 +1,11 @@
+apiVersion: apps/v1
+kind: Deployment
+spec:
+  template:
+    spec:
+      containers:
+        - name: app
+          image: acme/app:latest
+          securityContext:
+            privileged: true
+            runAsUser: 0
