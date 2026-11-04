@@ -69,6 +69,18 @@ For the full documentation suite: `$repo-readme-generator document this repo ful
 
 Skills are installed as folders under `~/.codex/skills/` (or `$CODEX_HOME/skills/` if you set `CODEX_HOME`). To remove one, delete its folder and restart Codex.
 
+### From inside Codex
+
+`$skill-installer` can only list and install skills; it has no uninstall command. You can still ask Codex to do the removal in plain language:
+
+```
+Delete the skill folder ~/.codex/skills/appsec-static-audit
+```
+
+Codex runs the delete for you. The folder is outside your project, so Codex asks you to approve the command. Restart Codex afterwards so the skill list refreshes. Do not remove the skills in `~/.codex/skills/.system/` (for example `skill-installer`); Codex manages those.
+
+### From the terminal
+
 ```
 rm -rf ~/.codex/skills/wave-a11y-scan
 rm -rf ~/.codex/skills/repo-readme-generator
