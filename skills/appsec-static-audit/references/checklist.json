@@ -1,0 +1,160 @@
+{
+  "domains": [
+    {
+      "key": "owasp", "title": "OWASP Top 10 in Code",
+      "intro": "Injection, cross-site scripting, SSRF, insecure deserialization, path traversal and unsafe file upload, traced from untrusted input to dangerous sink.",
+      "items": [
+        {"key": "OWASP-01", "issue": "SQL queries are parameterized; no string-built SQL", "signals": ["INJ-SQL-1", "INJ-SQL-2", "INJ-SQL-3"], "review": "Trace every request parameter to each DB call, including ORM raw()/native queries and stored procedures."},
+        {"key": "OWASP-02", "issue": "NoSQL queries reject operator injection and untyped input", "signals": ["INJ-NOSQL-1"], "review": "Check Mongo/Dynamo/Elastic filters built from req.body; look for $where, $ne, $regex."},
+        {"key": "OWASP-03", "issue": "No OS command or dynamic code execution with user-influenced data", "signals": ["INJ-CMD-1", "INJ-CMD-2", "INJ-CMD-3", "INJ-CMD-4", "INJ-EVAL-1"], "review": "Inspect shell-outs, template engines, report generators, file converters."},
+        {"key": "OWASP-04", "issue": "Output is context-encoded; no raw HTML sinks (XSS)", "signals": ["XSS-1", "XSS-2", "XSS-3"], "review": "Check templates, client-side rendering, rich-text/markdown renderers, CSP presence."},
+        {"key": "OWASP-05", "issue": "Server-side requests to user-supplied URLs are allowlisted (SSRF)", "signals": ["SSRF-1"], "review": "Look at webhooks, URL importers, image fetchers, PDF renderers, metadata endpoint exposure."},
+        {"key": "OWASP-06", "issue": "Untrusted data is never natively deserialized; XML parsers disable external entities", "signals": ["DESER-1", "XXE-1"], "review": "Check session stores, message queues, caches, SAML/XML parsing."},
+        {"key": "OWASP-07", "issue": "File paths are canonicalized and confined to an allowed base directory", "signals": ["PATH-1"], "review": "Check download/export/attachment/template-include handlers."},
+        {"key": "OWASP-08", "issue": "File uploads validate type, size and name, and are stored non-executable", "signals": ["UPLOAD-1"], "review": "Verify content sniffing, extension allowlist, storage location, AV scanning, served Content-Type/disposition."},
+        {"key": "OWASP-09", "issue": "Redirects and forwards use allowlisted targets", "signals": ["REDIR-1"], "review": "Check login 'next', SSO return URLs, logout redirects."},
+        {"key": "OWASP-10", "issue": "CSRF protection is active on state-changing cookie-authenticated routes", "signals": ["CSRF-1"], "review": "Confirm tokens or SameSite+custom-header strategy on all POST/PUT/DELETE."}
+      ]
+    },
+    {
+      "key": "access", "title": "Access Control",
+      "intro": "Authorization on every object and function; IDOR; privilege escalation through role or parameter tampering.",
+      "items": [
+        {"key": "ACC-01", "issue": "Every protected function enforces server-side authorization (deny by default)", "signals": ["ACC-3", "API-3"], "review": "Enumerate routes/controllers/GraphQL resolvers/jobs and confirm each has an explicit policy check."},
+        {"key": "ACC-02", "issue": "Object access is scoped to the owner or authorized role (no IDOR)", "signals": ["ACC-1"], "review": "For each lookup by ID, confirm tenant/owner filter or policy; test taxpayer/case/record IDs."},
+        {"key": "ACC-03", "issue": "Roles and privilege flags cannot be set or elevated by the client", "signals": ["ACC-2", "API-1"], "review": "Check profile-update, registration and admin-create endpoints for bindable role/status fields."},
+        {"key": "ACC-04", "issue": "Identity and role are never trusted from client-controllable headers or cookies", "signals": ["ACC-4"], "review": "Check gateway/proxy trust model and header stripping."},
+        {"key": "ACC-05", "issue": "UI-level hiding is backed by server enforcement", "signals": ["ACC-5"], "review": "Compare front-end role checks with the API they call."},
+        {"key": "ACC-06", "issue": "Staff/admin functions are separated and least-privilege (RBAC/ABAC)", "signals": [], "review": "Review role model, privilege separation, break-glass paths and who can read FTI."}
+      ]
+    },
+    {
+      "key": "sso", "title": "SSO and Identity",
+      "intro": "SAML, OIDC and JWT validation; redirect allowlisting; IdP claim to role mapping; no local login or debug routes that bypass SSO.",
+      "items": [
+        {"key": "SSO-01", "issue": "SAML responses/assertions are signature-validated against IdP metadata", "signals": ["SSO-SAML-1"], "review": "Confirm library config (strict mode, wantAssertionsSigned, cert pinning, XSW protection)."},
+        {"key": "SSO-02", "issue": "SAML audience and recipient restrictions are enforced", "signals": ["SSO-SAML-2"], "review": "Check Audience == SP entityID and Recipient == ACS URL."},
+        {"key": "SSO-03", "issue": "SAML replay protection (InResponseTo, NotOnOrAfter, assertion ID cache)", "signals": ["SSO-SAML-3"], "review": "Check clock skew limits and one-time assertion cache."},
+        {"key": "SSO-04", "issue": "OIDC uses state, nonce and PKCE", "signals": ["SSO-OIDC-3", "SSO-OIDC-4", "SSO-OIDC-5"], "review": "Trace the authorization request and callback handler."},
+        {"key": "SSO-05", "issue": "Redirect URIs are exact-match allowlisted", "signals": ["SSO-OIDC-1"], "review": "Check client registration config and runtime redirect handling."},
+        {"key": "SSO-06", "issue": "JWTs are verified for signature, issuer, audience, expiry; 'none' rejected; algorithm pinned", "signals": ["SSO-JWT-1", "SSO-JWT-2", "SSO-JWT-3", "SSO-JWT-4", "SSO-JWT-5"], "review": "Check every verify call, key source (JWKS), and algorithm list."},
+        {"key": "SSO-07", "issue": "Application roles are mapped from IdP claims through a server-side allowlist", "signals": ["SSO-OIDC-2"], "review": "Check claim-to-role mapping, default role, unknown-group handling."},
+        {"key": "SSO-08", "issue": "No leftover local logins, debug routes or auth-bypass switches", "signals": ["SSO-BYP-1", "SSO-BYP-2"], "review": "Search for local-auth strategies, seed admin accounts, feature flags, test endpoints."}
+      ]
+    },
+    {
+      "key": "session", "title": "Session Management",
+      "intro": "Timeouts, single logout, session fixation and cookie flags.",
+      "items": [
+        {"key": "SES-01", "issue": "Session cookies set Secure, HttpOnly and SameSite", "signals": ["SES-1"], "review": "Check framework session config and any manual Set-Cookie."},
+        {"key": "SES-02", "issue": "Idle and absolute session timeouts are enforced", "signals": ["SES-2"], "review": "Confirm values against agency policy and server-side enforcement."},
+        {"key": "SES-03", "issue": "Session ID is regenerated on login and privilege change (fixation)", "signals": ["SES-5"], "review": "Inspect the login handler."},
+        {"key": "SES-04", "issue": "Single logout / server-side invalidation and token revocation", "signals": ["SES-6"], "review": "Check logout handler, SLO endpoints, refresh-token revocation."},
+        {"key": "SES-05", "issue": "Tokens are not stored in script-readable browser storage", "signals": ["SES-3"], "review": "Check SPA token storage."},
+        {"key": "SES-06", "issue": "Session identifiers are not accepted from URLs", "signals": ["SES-4"], "review": "Check URL rewriting and parameter handling."}
+      ]
+    },
+    {
+      "key": "mfa", "title": "Multi-Factor Authentication",
+      "intro": "MFA enforcement, especially on staff and administrator paths.",
+      "items": [
+        {"key": "MFA-01", "issue": "MFA is enforced for administrator and staff authentication", "signals": ["MFA-2"], "review": "Check IdP policy references, amr/acr claim checks, step-up for sensitive actions."},
+        {"key": "MFA-02", "issue": "MFA cannot be disabled or bypassed by configuration or parameter", "signals": ["MFA-1"], "review": "Search flags, env vars, remembered-device logic and recovery flows."},
+        {"key": "MFA-03", "issue": "MFA enrolment and recovery flows are protected against takeover", "signals": [], "review": "Review reset, backup codes, factor changes, rate limits."}
+      ]
+    },
+    {
+      "key": "secrets", "title": "Secrets Management",
+      "intro": "Hardcoded keys, tokens and passwords in the working tree and in git history.",
+      "items": [
+        {"key": "SECR-01", "issue": "No hardcoded credentials, keys or tokens in source or config", "signals": ["SEC-*", "SSO-JWT-4", "SSO-BYP-2"], "review": "Review every scanner hit; check config templates and CI files."},
+        {"key": "SECR-02", "issue": "No private keys, keystores or env files committed", "signals": ["SEC-FILE-1"], "review": "Check repository file inventory."},
+        {"key": "SECR-03", "issue": "Git history contains no secrets (or they are rotated)", "signals": ["SEC-HIST-*"], "review": "Review git-history scan; confirm rotation for any live credential."},
+        {"key": "SECR-04", "issue": "Secrets are loaded from a secrets manager / environment at runtime, not baked into images", "signals": ["DKR-2"], "review": "Check Dockerfiles, compose, K8s manifests, Terraform variables."}
+      ]
+    },
+    {
+      "key": "deps", "title": "Dependencies and SBOM",
+      "intro": "Known CVEs, outdated or abandoned packages, reproducible builds and a software bill of materials.",
+      "items": [
+        {"key": "DEP-01", "issue": "No dependencies with known critical/high vulnerabilities", "signals": ["DEP-1"], "review": "Run a connected OSV/NVD scan and import results with --osv-results."},
+        {"key": "DEP-02", "issue": "No abandoned or end-of-life packages", "signals": ["DEP-2"], "review": "Review top-level dependencies for maintenance status."},
+        {"key": "DEP-03", "issue": "Dependencies are pinned and lockfiles committed", "signals": ["DEP-3", "DEP-4"], "review": "Check manifests and CI install commands (npm ci, pip --require-hashes)."},
+        {"key": "DEP-04", "issue": "SBOM (CycloneDX) generated for the release", "signals": [], "review": "SBOM produced by this audit; confirm it is produced in CI per release."}
+      ]
+    },
+    {
+      "key": "crypto", "title": "Cryptography",
+      "intro": "Weak algorithms, static IVs, homegrown crypto and TLS configuration.",
+      "items": [
+        {"key": "CRY-01", "issue": "Approved hashes only; passwords use Argon2id/bcrypt/scrypt/PBKDF2", "signals": ["CRY-1", "CRY-2"], "review": "Check password storage and integrity checks."},
+        {"key": "CRY-02", "issue": "Strong ciphers and modes (AES-GCM); no DES/RC4/ECB", "signals": ["CRY-3"], "review": "Check all encryption call sites and library defaults."},
+        {"key": "CRY-03", "issue": "IVs/nonces/salts are random and unique per operation", "signals": ["CRY-4"], "review": "Inspect encryption helpers."},
+        {"key": "CRY-04", "issue": "Security-relevant randomness uses a CSPRNG", "signals": ["CRY-5"], "review": "Check token, reset-code and OTP generation."},
+        {"key": "CRY-05", "issue": "TLS certificate and hostname validation are never disabled", "signals": ["CRY-6"], "review": "Check HTTP, DB and queue clients."},
+        {"key": "CRY-06", "issue": "TLS 1.2+ only with strong ciphers; FIPS-validated modules for FTI", "signals": ["CRY-7"], "review": "Check nginx/Apache/ALB/Spring/IIS config and runtime crypto provider."},
+        {"key": "CRY-07", "issue": "No homegrown cryptography or encoding used as protection", "signals": ["CRY-8"], "review": "Search for custom encrypt/hash helpers."}
+      ]
+    },
+    {
+      "key": "data", "title": "Data Protection (PII / FTI)",
+      "intro": "Encryption at rest, masking, leakage into logs and error messages, and retention handling for SSNs, financial records and federal tax information.",
+      "items": [
+        {"key": "DATA-01", "issue": "SSN/TIN/financial fields are encrypted at rest (field-level or equivalent)", "signals": ["DATA-1", "DATA-8"], "review": "Inspect models/DDL, ORM column types, KMS usage, key custody."},
+        {"key": "DATA-02", "issue": "Sensitive values are masked in UI, API responses and exports", "signals": ["DATA-5"], "review": "Check serializers/DTOs and report generators."},
+        {"key": "DATA-03", "issue": "No PII/FTI or secrets written to logs", "signals": ["DATA-2", "DATA-3"], "review": "Check logging calls and framework request/response logging."},
+        {"key": "DATA-04", "issue": "No real PII/FTI in source, fixtures, dumps or backups", "signals": ["DATA-4", "SEC-FILE-2"], "review": "Review fixtures and data files."},
+        {"key": "DATA-05", "issue": "Retention, purge and disposal handling is implemented", "signals": ["DATA-7"], "review": "Check scheduled jobs, soft-delete, backup lifecycle."},
+        {"key": "DATA-06", "issue": "Sensitive responses are not cacheable", "signals": ["DATA-6"], "review": "Check Cache-Control on authenticated pages."}
+      ]
+    },
+    {
+      "key": "api", "title": "API Security",
+      "intro": "Authentication on every endpoint, input validation, rate limiting and mass assignment.",
+      "items": [
+        {"key": "API-01", "issue": "Every endpoint requires authentication unless explicitly public", "signals": ["API-3"], "review": "Enumerate routes; verify global auth middleware and public allowlist."},
+        {"key": "API-02", "issue": "Inputs are validated with allowlist schemas", "signals": ["API-5"], "review": "Check DTO/schema validation on every route."},
+        {"key": "API-03", "issue": "Rate limiting protects login, reset, MFA, search and export", "signals": ["API-4"], "review": "Check app, gateway and WAF controls."},
+        {"key": "API-04", "issue": "Mass assignment is prevented (explicit bindable fields)", "signals": ["API-1"], "review": "Check create/update handlers."},
+        {"key": "API-05", "issue": "GraphQL introspection and API docs are disabled or protected in production", "signals": ["API-2"], "review": "Check production configuration."}
+      ]
+    },
+    {
+      "key": "iac", "title": "Infrastructure as Code and Configuration",
+      "intro": "Terraform, CloudFormation, Kubernetes, Dockerfiles, storage exposure, IAM scope, encryption, CORS and security headers.",
+      "items": [
+        {"key": "IAC-01", "issue": "No publicly accessible storage buckets or containers", "signals": ["IAC-1"], "review": "Check bucket ACLs, policies and public-access-block settings."},
+        {"key": "IAC-02", "issue": "IAM policies follow least privilege (no wildcard action/resource/principal)", "signals": ["IAC-2"], "review": "Review roles attached to workloads and CI."},
+        {"key": "IAC-03", "issue": "No unrestricted ingress (0.0.0.0/0) to admin or data ports", "signals": ["IAC-3", "IAC-5", "DKR-4"], "review": "Review security groups, NSGs, firewall rules and compose port bindings."},
+        {"key": "IAC-04", "issue": "Encryption at rest enabled with managed keys and rotation", "signals": ["IAC-4"], "review": "Check EBS/RDS/S3/Dynamo/Elastic/Blob settings."},
+        {"key": "IAC-05", "issue": "Encryption in transit enforced; HTTP redirected to HTTPS", "signals": ["IAC-7", "CRY-7"], "review": "Check load balancer, CDN and DB TLS settings."},
+        {"key": "IAC-06", "issue": "Containers run non-root, unprivileged, pinned images", "signals": ["K8S-1", "K8S-2", "DKR-1", "DKR-3"], "review": "Review Dockerfiles and manifests; PodSecurity level."},
+        {"key": "IAC-07", "issue": "Debug/dev features are disabled for production", "signals": ["CFG-1", "CFG-3"], "review": "Check environment-specific config."},
+        {"key": "IAC-08", "issue": "CORS is restricted to trusted origins", "signals": ["CFG-2"], "review": "Check all CORS configuration layers."},
+        {"key": "IAC-09", "issue": "Security headers (CSP, HSTS, X-Frame-Options, nosniff) are set", "signals": ["CFG-4"], "review": "Check app middleware, web server and CDN."},
+        {"key": "IAC-10", "issue": "Cloud audit logging is enabled with adequate retention", "signals": ["IAC-6"], "review": "Check CloudTrail/Activity Log/flow logs/bucket logging."}
+      ]
+    },
+    {
+      "key": "logging", "title": "Logging and Audit Trails",
+      "intro": "Security events captured and tamper-evident; no sensitive data in logs.",
+      "items": [
+        {"key": "LOG-01", "issue": "Authentication, authorization failures and admin actions are logged", "signals": ["LOG-1"], "review": "Check login, MFA, role change, export and delete paths."},
+        {"key": "LOG-02", "issue": "Access to PII/FTI is recorded in an audit trail (who/what/when/where/outcome)", "signals": ["LOG-2"], "review": "Confirm read-access auditing, not just writes."},
+        {"key": "LOG-03", "issue": "Logs contain no sensitive data and resist injection", "signals": ["DATA-2", "DATA-3", "LOG-4"], "review": "Check redaction filters and log formats."},
+        {"key": "LOG-04", "issue": "Errors are not silently swallowed", "signals": ["LOG-3"], "review": "Review empty catch/except blocks around security logic."},
+        {"key": "LOG-05", "issue": "Logs are centralized, protected from tampering and retained per policy", "signals": ["IAC-6"], "review": "Check shipping, permissions and retention config."}
+      ]
+    },
+    {
+      "key": "errors", "title": "Error Handling",
+      "intro": "No stack traces or internal details exposed to users.",
+      "items": [
+        {"key": "ERR-01", "issue": "Stack traces and exception details are not returned to clients", "signals": ["ERR-1"], "review": "Check exception handlers and response bodies."},
+        {"key": "ERR-02", "issue": "A global handler returns generic errors with a correlation ID", "signals": ["ERR-2"], "review": "Check framework error pages and fallbacks."},
+        {"key": "ERR-03", "issue": "Debug pages and verbose errors are disabled in production", "signals": ["CFG-1"], "review": "Check production configuration."},
+        {"key": "ERR-04", "issue": "Failures in security checks fail closed", "signals": ["LOG-3"], "review": "Inspect auth/authorization exception paths."}
+      ]
+    }
+  ]
+}

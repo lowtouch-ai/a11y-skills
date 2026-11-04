@@ -1,0 +1,2 @@
+SAMPLE = {"name": "Jane Roe", "ssn": "123-45-6789"}
+AWS_KEY = "AKIAIOSFODNN7EXAMPLE"

@@ -24,6 +24,7 @@ The skills in this repository are reusable building blocks for that kind of work
 | Skill | What it does |
 |---|---|
 | [`wave-a11y-scan`](skills/wave-a11y-scan) | WAVE-style accessibility scan of web pages with a client-ready report (WCAG 2.x, Section 508 note). |
+| [`appsec-static-audit`](skills/appsec-static-audit) | Source-code-only security audit (OWASP, SSO, secrets, IaC, SBOM, PII/FTI) with a timestamped enterprise report mapped to NIST 800-53, IRS Pub 1075 and EOTSS. |
 | [`repo-readme-generator`](skills/repo-readme-generator) | Creates or updates a repo's README, or a full documentation suite with `AGENTS.md` and diagrams, from verified evidence. |
 
 ## Install
@@ -36,6 +37,10 @@ $skill-installer install https://github.com/lowtouch-ai/krithi-skills/tree/main/
 
 ```
 $skill-installer install https://github.com/lowtouch-ai/krithi-skills/tree/main/skills/repo-readme-generator
+```
+
+```
+$skill-installer install https://github.com/lowtouch-ai/krithi-skills/tree/main/skills/appsec-static-audit
 ```
 
 `wave-a11y-scan` installs its own dependencies (Playwright and Chromium, about 150 MB) the first time it runs.
@@ -51,6 +56,12 @@ $wave-a11y-scan scan https://example.com
 ```
 $repo-readme-generator create the README for this repo
 ```
+
+```
+$appsec-static-audit audit this repository for security
+```
+
+`appsec-static-audit` needs only Python 3 and git; it makes no network calls and writes `security-audit/security-audit-report_<timestamp>.md` plus an SBOM.
 
 For the full documentation suite: `$repo-readme-generator document this repo fully`
 
