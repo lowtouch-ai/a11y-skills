@@ -7,8 +7,12 @@ triage.json (written by the auditor after reading the code):
 {
   "meta": {"application": "...", "customer": "...", "assessor": "...", "engagement": "...",
            "executive_commentary": "optional paragraph", "scope_in": ["..."], "scope_out": ["..."], "fti_in_scope": true},
-  "decisions": {"FND-001": "confirmed" | "false_positive" | "needs_review",
-                "FND-002": {"decision": "false_positive", "reason": "value is a documented test constant"}},
+  "decisions": {"FND-001": "confirmed" | "false_positive" | "needs_review" | "consolidated",
+                "FND-002": {"decision": "false_positive", "reason": "value is a documented test constant"},
+                "FND-003": {"decision": "consolidated", "into": "FND-M01", "reason": "same root cause"}},
+  "bulk": [{"rule": "DKR-1", "file_regex": "^docker/", "decision": "false_positive", "reason": "..."}],   (applies only where no explicit decision)
+  meta extras: application_description, architecture_md (section 2.7, Markdown/mermaid), immediate_actions (list of strings for 1.6),
+               dependency_notes_md (section 7.3), scope_in / scope_out, positive_controls_md, fti_in_scope
   "overrides": {"FND-001": {"severity": "High", "title": "...", "description": "...", "impact": "...",
                             "exploit_scenario": "...", "fix": "...", "controls_extra": {"nist": ["SC-13"]}}},
   "new_findings": [{"title": "...", "domain": "access", "severity": "High", "cwe": "CWE-639", "file": "app/views.py", "line": 88,
@@ -69,10 +73,26 @@ def first_sentence(s, n=170):
 
 def loc_str(f, indent=True):
     locs = f.get("locations") or []
-    base = f["file"]
+    files = {l.get("file", f["file"]) for l in locs}
+    if len(files) > 1:
+        return f"`{f['file']}:{f['line']}` and {len(files) - 1} other file(s)"
     lines = sorted({l["line"] for l in locs}) or [f.get("line", 1)]
     shown = ", ".join(str(x) for x in lines[:6]) + ("…" if len(lines) > 6 else "")
-    return f"`{base}:{shown}`"
+    return f"`{f['file']}:{shown}`"
+
+
+CWE_OWASP = {}
+for _o, _l in {"A01": [22, 200, 269, 284, 285, 352, 425, 601, 639, 862, 863, 915], "A02": [259, 311, 312, 319, 326, 327, 328, 330, 338, 916],
+               "A03": [20, 74, 77, 78, 79, 89, 94, 95, 116, 917, 943], "A04": [209, 434, 522, 770, 799, 840], "A05": [16, 489, 611, 614, 693, 942, 1004, 1275],
+               "A06": [1104, 1395], "A07": [287, 288, 290, 294, 306, 307, 345, 384, 613, 798, 521], "A08": [345, 347, 494, 502, 829],
+               "A09": [117, 223, 532, 778], "A10": [918]}.items():
+    for _c in _l:
+        CWE_OWASP.setdefault(_c, _o)
+
+
+def owasp_for(cwe):
+    m = re.search(r"(\d+)", cwe or "")
+    return CWE_OWASP.get(int(m.group(1)), "") if m else ""
 
 
 def load_frameworks(extra):
@@ -113,9 +133,12 @@ def main():
     # ---------------- findings: apply triage
     decisions = {}
     reasons = {}
+    into = {}
     for k, v in (tri.get("decisions") or {}).items():
         if isinstance(v, dict):
             decisions[k], reasons[k] = v.get("decision", ""), v.get("reason", "")
+            if v.get("into"):
+                into[k] = v["into"]
         else:
             decisions[k] = v
     overrides = tri.get("overrides") or {}
@@ -126,27 +149,43 @@ def main():
     for f in scan["findings"]:
         d = decisions.get(f["id"])
         if d is None:
+            for b in tri.get("bulk") or []:
+                if b.get("rule") and not (f["rule"] == b["rule"] or (b["rule"].endswith("*") and f["rule"].startswith(b["rule"][:-1]))):
+                    continue
+                if b.get("file_regex") and not re.search(b["file_regex"], f["file"]):
+                    continue
+                if b.get("snippet_regex") and not re.search(b["snippet_regex"], " ".join(l.get("snippet", "") for l in f["locations"])):
+                    continue
+                if not (b.get("rule") or b.get("file_regex") or b.get("snippet_regex")):
+                    continue
+                d, reasons[f["id"]] = b["decision"], b.get("reason", "")
+                if b.get("into"):
+                    into[f["id"]] = b["into"]
+                break
+        if d is None:
             if not a.allow_untriaged:
                 errors.append(f"candidate {f['id']} ({f['rule']} {f['file']}:{f['line']}) has no decision in triage.json")
             d = "needs_review"
         d = d.lower().replace(" ", "_")
-        if d not in ("confirmed", "false_positive", "needs_review"):
+        if d not in ("confirmed", "false_positive", "needs_review", "consolidated"):
             errors.append(f"{f['id']}: unknown decision '{d}'")
         f = {**f, **{k: v for k, v in (overrides.get(f["id"]) or {}).items() if k != "controls_extra"}}
         f["controls_extra"] = (overrides.get(f["id"]) or {}).get("controls_extra", {})
         f["decision"] = d
-        if d == "false_positive":
+        if d in ("false_positive", "consolidated"):
             if not reasons.get(f["id"]):
                 warnings.append(f"{f['id']} rejected without a reason")
-            rejected.append((f, reasons.get(f["id"], "")))
+            if d == "consolidated" and not into.get(f["id"]):
+                warnings.append(f"{f['id']} consolidated without 'into'")
+            rejected.append((f, ("Consolidated into " + into[f["id"]] + ". " if into.get(f["id"]) else "") + reasons.get(f["id"], ""), d))
         else:
             findings.append(f)
     for n in tri.get("new_findings") or []:
         loc_line = int(n.get("line", 1) or 1)
-        findings.append(dict(id="", rule="MANUAL", domain=n["domain"], severity=n["severity"], cwe=n.get("cwe", ""), owasp=n.get("owasp", ""),
-                             title=n["title"], file=n.get("file", "(multiple)"), line=loc_line, detail=n.get("description", ""),
+        findings.append(dict(id="", rule="MANUAL", domain=n["domain"], severity=n["severity"], cwe=n.get("cwe", ""), owasp=n.get("owasp") or owasp_for(n.get("cwe", "")),
+                             title=n["title"], file=n.get("file", "(multiple)"), line=loc_line, description=n.get("description", ""), detail="",
                              fix=n.get("fix", ""), impact=n.get("impact", ""), exploit_scenario=n.get("exploit_scenario", ""),
-                             locations=[dict(line=loc_line, snippet=redact_line(n.get("evidence", ""), force=True))] if n.get("evidence") else [],
+                             locations=[dict(line=loc_line, snippet=redact_line(n.get("evidence", "")))] if n.get("evidence") else [],
                              confidence=n.get("confidence", "High"), decision="confirmed", source="manual", status="Open",
                              controls_extra=n.get("controls_extra", {})))
     findings.sort(key=lambda f: (SEV.index(f["severity"]), dom_order.index(f["domain"]) if f["domain"] in dom_order else 99, f["file"], f["line"]))
@@ -155,6 +194,7 @@ def main():
         if not f["id"]:
             n_manual += 1
             f["id"] = f"FND-M{n_manual:02d}"
+        f["owasp"] = f.get("owasp") or owasp_for(f.get("cwe", ""))
         if f["domain"] not in dom_title:
             errors.append(f"{f['id']}: unknown domain '{f['domain']}'")
     for f in findings:
@@ -238,7 +278,7 @@ def main():
     w("\n## Table of Contents\n")
     for t in ["1. Executive Summary", "2. Scope and Methodology", "3. Findings Summary", "4. Security Control Checklist by Domain",
               "5. Detailed Findings", "6. Compliance Mapping", "7. Dependencies and Software Bill of Materials",
-              "8. Remediation Roadmap", "Appendix A. Scan Coverage and Tooling", "Appendix B. Rejected Candidates (False Positives)"]:
+              "8. Remediation Roadmap", "Appendix A. Scan Coverage and Tooling", "Appendix B. Rejected and Consolidated Candidates"]:
         w(f"- {t}")
 
     # ================= 1 EXEC SUMMARY
@@ -250,9 +290,10 @@ def main():
     for f in confirmed:
         dom_hit.setdefault(f["domain"], []).append(f)
     top_dom = sorted(dom_hit, key=lambda d: (min(SEV.index(f["severity"]) for f in dom_hit[d]), -len(dom_hit[d])))[:3]
-    w(f"This report presents the results of a static security assessment of **{app}**, a public-facing application that handles sensitive personal data"
-      + (" (SSNs, financial records and potentially federal tax information)" if fti else "") +
-      f". {inv['files_scanned']:,} source and configuration files ({inv['lines']:,} lines) were analysed against 13 control domains covering the OWASP Top 10, access control, "
+    desc = meta.get("application_description") or ("a public-facing application that handles sensitive personal data" + (" (SSNs, financial records and potentially federal tax information)" if fti else ""))
+    w(f"This report presents the results of a static security assessment of **{app}**, {desc}"
+      + (". " if not desc.endswith(".") else " ") +
+      f"{inv['files_scanned']:,} source and configuration files ({inv['lines']:,} lines) were analysed against 13 control domains covering the OWASP Top 10, access control, "
       "SSO/identity, session management, MFA, secrets, dependencies, cryptography, data protection, API security, infrastructure-as-code, logging and error handling. "
       "Findings are mapped to NIST SP 800-53, IRS Publication 1075 and the Massachusetts EOTSS Enterprise Information Security Standards.\n")
     if confirmed:
@@ -292,9 +333,12 @@ def main():
 
     w("\n### 1.6 Recommended Immediate Actions\n")
     acts = []
-    for f in confirmed:
-        if f["severity"] in ("Critical", "High") and len(acts) < 8:
-            acts.append(f"1. **{f['id']}** ({f['severity']}): {first_sentence(f['fix'])}")
+    if meta.get("immediate_actions"):
+        acts = [f"{i}. {a_}" for i, a_ in enumerate(meta["immediate_actions"], 1)]
+    else:
+        for f in confirmed:
+            if f["severity"] in ("Critical", "High") and len(acts) < 8:
+                acts.append(f"{len(acts) + 1}. **{f['id']}** ({f['severity']}): {first_sentence(f['fix'])}")
     w("\n".join(acts) if acts else "No immediate actions required beyond the roadmap in Section 8.")
 
     # ================= 2 SCOPE
@@ -328,9 +372,18 @@ def main():
       "\n- Absence of a finding in a domain is not a guarantee of security. Source-only review cannot confirm controls enforced outside the repository.\n"
       "- Severity reflects code-level exploitability and data sensitivity; it should be re-rated with deployment context (network exposure, compensating controls).")
 
+    if meta.get("architecture_md"):
+        w("\n### 2.7 Architecture and Trust Boundaries Reviewed\n")
+        w(meta["architecture_md"].strip() + "\n")
+    if meta.get("positive_controls_md"):
+        w("\n### 2.8 Positive Controls Observed\n")
+        w(meta["positive_controls_md"].strip() + "\n")
+
     # ================= 3 SUMMARY
     w("\n---\n\n## 3. Findings Summary\n")
     w("### 3.1 Findings by Domain and Severity\n")
+    if unconfirmed:
+        w(f"This table counts the {len(confirmed)} confirmed finding(s) and {len(unconfirmed)} unconfirmed candidate(s). Section 1.3 separates them.\n")
     rows = []
     for i, dk in enumerate(dom_order, 1):
         ds = [f for f in findings if f["domain"] == dk]
@@ -355,7 +408,21 @@ def main():
         w(dom_intro[dk] + "\n")
         w(table(["No.", "Control / Issue", "Status", "Evidence"], [[c["number"], c["issue"], f"**{c['status']}**", c["evidence"]] for c in items]))
         ds = [f for f in findings if f["domain"] == dk]
-        w("\n**Findings in this domain:** " + (", ".join(f"{f['id']} ({f['severity']})" for f in ds) if ds else "none") + "\n")
+        own = {f["id"] for f in ds}
+        refd = sorted({x for c in items for x in c["linked"]} - own)
+        w("\n**Findings in this domain:** " + (", ".join(f"{f['id']} ({f['severity']})" for f in ds) if ds else "none") +
+          ("; **also referenced by these checks:** " + ", ".join(refd) if refd else "") + "\n")
+        if dk == "api" and scan.get("routes"):
+            rts = scan["routes"]
+            cnt = {}
+            for r_ in rts:
+                cnt[r_["auth"]] = cnt.get(r_["auth"], 0) + 1
+            w(f"**Route inventory ({len(rts)} route registrations found statically).** " + ", ".join(f"{k}: {v}" for k, v in sorted(cnt.items())) +
+              ". 'none seen' means no authentication marker near the route; it may be enforced by a gateway or base class. The full list is in `scan.json`.\n")
+            show = [r_ for r_ in rts if r_["auth"] == "none seen"][:40]
+            if show:
+                w(table(["Method", "Path", "Framework", "Location", "Authentication"], [[r_["method"], f"`{r_['path']}`", r_["framework"], f"`{r_['file']}:{r_['line']}`", r_["auth"]] for r_ in show]))
+                w("")
 
     # ================= 5 DETAILED FINDINGS
     w("\n---\n\n## 5. Detailed Findings\n")
@@ -367,7 +434,7 @@ def main():
         w(f"### 5.{i} {f['id']}: {f['title']}{flag}\n")
         w(table(["Attribute", "Detail"], [
             ["Severity", f"**{f['severity']}**"], ["Domain", dom_title[f["domain"]]],
-            ["Location", ", ".join(f"`{f['file']}:{l['line']}`" for l in (f.get("locations") or [dict(line=f['line'])])[:8])],
+            ["Location", ", ".join(f"`{l.get('file', f['file'])}:{l['line']}`" for l in (f.get("locations") or [dict(line=f['line'])])[:12])],
             ["Weakness (CWE)", f.get("cwe") or "—"], ["OWASP Top 10 (2021)", f.get("owasp") or "—"],
             ["Confidence", f.get("confidence", "—")], ["Detected by", f.get("source", "scanner") + (f" rule {f['rule']}" if f["rule"] != "MANUAL" else " (manual review)")],
             ["Status", f.get("status", "Open")]]))
@@ -383,7 +450,7 @@ def main():
         snips = [l for l in (f.get("locations") or []) if l.get("snippet")]
         if snips:
             w("**Evidence** (secrets masked)\n")
-            w("```text\n" + "\n".join(f"{f['file']}:{l['line']}: {redact_line(l['snippet'])}" for l in snips[:6]) + "\n```\n")
+            w("```text\n" + "\n".join(f"{l.get('file', f['file'])}:{l['line']}: {redact_line(l['snippet'])}" for l in snips[:12]) + "\n```\n")
         w(f"**Recommendation.** {f['fix']}\n")
         w("**Compliance mapping.** NIST 800-53: " + ", ".join(c for c, _ in nist[:6]) + ". IRS Pub 1075: " + ", ".join(c for c, _ in irs[:4]) +
           ". EOTSS: " + "; ".join(eotss_label(e) for e in eot[:3]) + ".\n")
@@ -391,9 +458,9 @@ def main():
     # ================= 6 COMPLIANCE
     w("\n---\n\n## 6. Compliance Mapping\n")
     w("Each finding inherits the controls mapped to its domain (`references/compliance-map.json`) plus any control added during review. "
-      "Confirm section numbers against the revisions the customer is audited against. IRS Pub 1075 Section 9.3 follows NIST 800-53 families; FTI-specific requirements "
-      "(FIPS 140-validated encryption in transit and at rest, audit of every FTI access, MFA for remote/privileged access, disposal) drive the severity of findings in the "
-      "access, crypto, data, logging and iac domains.\n")
+      "Confirm section numbers against the revisions the customer is audited against; framework revisions were not verified offline and this mapping is not an applicability determination or compliance attestation. IRS Pub 1075 Section 9.3 follows NIST 800-53 families."
+      + (" FTI-specific requirements (FIPS 140-validated encryption in transit and at rest, audit of every FTI access, MFA for remote/privileged access, disposal) drive the severity of findings in the "
+         "access, crypto, data, logging and iac domains.\n" if fti else " FTI handling was not established for this engagement and did not raise any severity rating.\n"))
     inv_n, inv_i, inv_e = {}, {}, {}
     inv_x = {fw["name"]: {} for fw in frameworks}
     for f in findings:
@@ -444,6 +511,9 @@ def main():
     w("### 7.2 Vulnerable, Unmaintained and Unpinned Dependencies\n")
     dd = [f for f in findings if f["domain"] == "deps"]
     w(table(["ID", "Severity", "Issue", "Detail", "Manifest"], [[f["id"], f["severity"], f["title"], f.get("detail", ""), f"`{f['file']}`"] for f in dd]) if dd else "None identified.")
+    if meta.get("dependency_notes_md"):
+        w("\n### 7.3 Additional Dependency and Image Notes\n")
+        w(meta["dependency_notes_md"].strip() + "\n")
     w("\n*Coverage note:* CVE matching used a curated offline list; run a connected OSV/NVD scan before release and import results to complete this section.")
 
     # ================= 8 ROADMAP
@@ -474,8 +544,12 @@ def main():
         ["Imported results", f"{scan.get('sarif_imported', 0)} SARIF result(s)"],
         ["Candidates raised / confirmed / rejected / unconfirmed", f"{len(scan['findings'])} / {len(confirmed) - n_manual} / {len(rejected)} / {len(unconfirmed)}"],
         ["Manually added findings", str(n_manual)]]))
-    w("\n## Appendix B. Rejected Candidates (False Positives)\n")
-    w(table(["ID", "Rule", "Location", "Reason"], [[f["id"], f["rule"], f"`{f['file']}:{f['line']}`", r_] for f, r_ in rejected]) if rejected else "None.")
+    w("\n## Appendix B. Rejected and Consolidated Candidates\n")
+    if rejected:
+        n_c = sum(1 for _f, _r, d_ in rejected if d_ == "consolidated")
+        w(f"{len(rejected)} candidate(s) were not carried into Section 5: {len(rejected) - n_c} incorrect or inapplicable pattern match(es) and {n_c} valid observation(s) consolidated into another finding. "
+          "A consolidation is not a claim that the weakness is absent.\n")
+    w(table(["ID", "Rule", "Location", "Reason"], [[f["id"], f["rule"], f"`{f['file']}:{f['line']}`", r_] for f, r_, _d in rejected]) if rejected else "None.")
 
     text = "\n".join(L) + "\n"
     # defence in depth: never emit a secret value

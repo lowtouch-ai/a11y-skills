@@ -16,21 +16,22 @@ RULES = []
 PRESENCE = []
 
 
-def R(id, domain, sev, cwe, title, pattern, langs, fix, flags=0, conf="Medium", owasp="", redact=False, only_files=None):
+def R(id, domain, sev, cwe, title, pattern, langs, fix, flags=0, conf="Medium", owasp="", redact=False, only_files=None, skip=None):
     RULES.append(dict(id=id, domain=domain, severity=sev, cwe=cwe, title=title, rx=re.compile(pattern, flags),
                       langs=set(langs.split()), fix=fix, confidence=conf, owasp=owasp, redact=redact,
-                      only_files=re.compile(only_files, I) if only_files else None))
+                      only_files=re.compile(only_files, I) if only_files else None,
+                      skip=re.compile(skip, I) if skip else None))
 
 
-def P(id, domain, sev, cwe, title, langs, when, expect, fix, scope="repo", owasp="", conf="Low"):
+def P(id, domain, sev, cwe, title, langs, when, expect, fix, scope="repo", owasp="", conf="Low", aggregate=False):
     PRESENCE.append(dict(id=id, domain=domain, severity=sev, cwe=cwe, title=title, langs=set(langs.split()),
                          when=re.compile(when, I), expect=re.compile(expect, I), fix=fix, scope=scope,
-                         owasp=owasp, confidence=conf))
+                         owasp=owasp, confidence=conf, aggregate=aggregate))
 
 
 # ----------------------------------------------------------------------------- 1 OWASP
 R("INJ-SQL-1", "owasp", "High", "CWE-89", "SQL built by string formatting (Python)",
-  r"(execute|executemany|raw|read_sql\w*|text)\s*\(\s*(f[\"']|[\"'][^\"']*[\"']\s*(%|\+|\.format\())", "py",
+  r"(?<![A-Za-z0-9_])(execute|executemany|raw|read_sql\w*|text)\s*\(\s*(f[\"']|[\"'][^\"']*[\"']\s*(%|\+|\.format\())", "py",
   "Use parameterized queries (cursor.execute(sql, params)) or the ORM; never interpolate input into SQL.", owasp="A03")
 R("INJ-SQL-2", "owasp", "High", "CWE-89", "SQL built by concatenation or interpolation",
   r"(query|execute\w*|prepareStatement|createQuery|createNativeQuery|Exec|Query\w*|FromSql\w*|find_by_sql)\s*\(\s*([\"'`][^\"'`]*[\"'`]\s*\+|`[^`]*\$\{|\$\"[^\"]*\{|f[\"'])",
@@ -66,17 +67,20 @@ R("XSS-2", "owasp", "High", "CWE-79", "Template auto-escaping disabled",
 R("XSS-3", "owasp", "High", "CWE-79", "Request data echoed into response (PHP)",
   r"\b(echo|print)\b[^;]*\$_(GET|POST|REQUEST|COOKIE)", "php",
   "Escape with htmlspecialchars($v, ENT_QUOTES, 'UTF-8') or use a templating engine.", owasp="A03")
-R("SSRF-1", "owasp", "High", "CWE-918", "Outbound request to a URL derived from request data",
-  r"(requests|httpx|urllib\.request|urlopen|aiohttp)\b.*\b(request\.|req\.|params|args\b|form\b|payload|data\[)|(axios|fetch|got|http\.get|https\.get|request)\w*\(\s*(req|request)\.(body|query|params)|new\s+URL\(\s*(req|request)\.|HttpClient.*(getParameter|Request\.Query)", "py js java cs",
-  "Validate against an allowlist of hosts/schemes; resolve and block private/link-local ranges (169.254.169.254); disable redirects.", owasp="A10")
+R("SSRF-1", "owasp", "High", "CWE-918", "Outbound request to a URL taken directly from request data",
+  r"(?<![\w.])(requests|httpx|aiohttp\.\w+|urllib\.request\.urlopen|urlopen)(\.\w+)?\(\s*[^,)]*\b(request\.(args|form|json|values|GET|POST|data|view_args)|req\.(body|query|params))\b|(?<![\w.])(axios|fetch|got|http\.get|https\.get)(\.\w+)?\(\s*[^,)]*\b(req|request)\.(body|query|params)\b|new\s+URL\(\s*(req|request)\.(body|query|params)|HttpClient[^;\n]*(getParameter|Request\.Query)", "py js java cs",
+  "Validate against an allowlist of hosts/schemes; resolve and block private/link-local ranges (169.254.169.254); disable redirects. For URLs held in variables, trace the variable back to its source.", owasp="A10")
 R("DESER-1", "owasp", "Critical", "CWE-502", "Insecure deserialization",
-  r"pickle\.loads?\(|cPickle\.|marshal\.loads|jsonpickle\.decode|yaml\.(unsafe_load|load\((?![^)]*Safe))|shelve\.open|ObjectInputStream|\.readObject\(\)|XMLDecoder|BinaryFormatter|NetDataContractSerializer|unserialize\(|node-serialize|Marshal\.load|TypeNameHandling\.(All|Auto|Objects)|enableDefaultTyping", "py java cs php js rb",
-  "Use data-only formats (JSON) with schema validation; never deserialize untrusted native objects; use yaml.safe_load.", owasp="A08")
+  r"pickle\.loads?\(|cPickle\.|marshal\.loads|jsonpickle\.decode|yaml\.unsafe_load|shelve\.open|ObjectInputStream|\.readObject\(\)|XMLDecoder|BinaryFormatter|NetDataContractSerializer|unserialize\(|node-serialize|Marshal\.load|TypeNameHandling\.(All|Auto|Objects)|enableDefaultTyping", "py java cs php js rb",
+  "Use data-only formats (JSON) with schema validation; never deserialize untrusted native objects.", owasp="A08")
+R("DESER-2", "owasp", "Medium", "CWE-502", "yaml.load without SafeLoader",
+  r"yaml\.load\((?![^)]*Safe)", "py",
+  "Use yaml.safe_load (FullLoader/default loaders can still construct objects). Severity rises to High if the input can be attacker-controlled.", owasp="A08")
 R("XXE-1", "owasp", "High", "CWE-611", "XML parser with external entities enabled",
   r"resolve_entities\s*=\s*True|libxml_disable_entity_loader\(\s*false|DtdProcessing\.Parse|XmlResolver\s*=\s*new|setFeature\([^)]*external-general-entities[^)]*true|LIBXML_NOENT", "py php cs java",
   "Disable DTDs and external entity resolution (defusedxml, FEATURE_SECURE_PROCESSING, DtdProcessing.Prohibit).", owasp="A05")
 R("PATH-1", "owasp", "High", "CWE-22", "File path built from request data (path traversal)",
-  r"(open|readFile\w*|createReadStream|sendFile|send_file|send_from_directory|res\.download|FileInputStream|File\(|Paths\.get|file_get_contents|include|require)\w*\s*\(.*\b(req\.|request\.|params|getParameter|\$_(GET|POST|REQUEST)|args\b)|path\.(join|resolve)\([^)]*(req|request)\.", "py js java php cs go",
+  r"(?<![\w])(open|readFile\w*|createReadStream|sendFile|send_file|send_from_directory|download|FileInputStream|File|Paths\.get|file_get_contents|include|require)\s*\([^\n]*\b(request\.(args|form|json|values|GET|POST|data|files|view_args)|req\.(body|query|params)|getParameter|\$_(GET|POST|REQUEST))|path\.(join|resolve)\([^)]*\b(req|request)\.(body|query|params)", "py js java php cs go",
   "Canonicalize and verify the resolved path stays inside an allowed base directory; map IDs to files instead of using raw names.", owasp="A01")
 R("UPLOAD-1", "owasp", "High", "CWE-434", "File upload handling (verify type, size, name, storage)",
   r"move_uploaded_file\(|multer\s*\(|\.save\([^)]*\.filename|getOriginalFilename\(|originalname|IFormFile|FileUpload|request\.files\b", "py js java cs php",
@@ -156,9 +160,15 @@ P("SSO-JWT-5", "sso", "High", "CWE-345", "JWT issuer/audience/expiry validation 
   "Pass issuer and audience to the verifier and require exp/nbf; reject tokens from other issuers.", owasp="A07")
 
 # ----------------------------------------------------------------------------- 4 SESSION
-R("SES-1", "session", "Medium", "CWE-614", "Cookie / session flag disabled (Secure, HttpOnly, SameSite)",
-  r"(secure|httponly|http_only|cookie_secure|cookie_httponly)[\"']?\s*[:=]\s*(false|False|0)\b|SESSION_COOKIE_(SECURE|HTTPONLY)\s*=\s*False|SESSION_COOKIE_SAMESITE\s*=\s*(None|[\"']None[\"'])|samesite[\"']?\s*[:=]\s*[\"']?none|session\.cookie_(secure|httponly)\s*=\s*(0|false|off)|CookieSecure\s*=\s*(false|CookieSecurePolicy\.None)|requireSSL\s*=\s*\"?false", "py js java cs php conf yaml rb",
-  "Set Secure, HttpOnly and SameSite=Lax/Strict on all session and auth cookies.", flags=I, owasp="A05")
+R("SES-1", "session", "Medium", "CWE-614", "Session cookie without the Secure flag",
+  r"(?<![\w])secure[\"']?\s*[:=]\s*(false|False|0)\b|SESSION_COOKIE_SECURE\s*=\s*False|session\.cookie_secure\s*=\s*(0|false|off)|CookieSecure\s*=\s*(false|CookieSecurePolicy\.None)|requireSSL\s*=\s*\"?false|CSRF_COOKIE_SECURE\s*=\s*False", "py js java cs php conf yaml rb",
+  "Set Secure on all session and authentication cookies so they are never sent over HTTP.", flags=I, owasp="A05")
+R("SES-1B", "session", "Medium", "CWE-1004", "Session cookie without the HttpOnly flag",
+  r"http_?only[\"']?\s*[:=]\s*(false|False|0)\b|SESSION_COOKIE_HTTPONLY\s*=\s*False|session\.cookie_httponly\s*=\s*(0|false|off)|HttpOnly\s*=\s*false|CSRF_COOKIE_HTTPONLY\s*=\s*False", "py js java cs php conf yaml rb",
+  "Set HttpOnly so scripts cannot read session cookies (limits XSS impact).", flags=I, owasp="A05")
+R("SES-1C", "session", "Medium", "CWE-1275", "Session cookie with SameSite=None or disabled",
+  r"SESSION_COOKIE_SAMESITE\s*=\s*(None|[\"']None[\"'])|same_?site[\"']?\s*[:=]\s*[\"']?none\b|SameSite\s*=\s*SameSiteMode\.None", "py js java cs php conf yaml rb",
+  "Use SameSite=Lax or Strict for session cookies; use None only when cross-site embedding is required, with Secure and CSRF tokens.", flags=I, owasp="A01")
 R("SES-2", "session", "Medium", "CWE-613", "Excessive or unlimited session lifetime",
   r"setMaxInactiveInterval\(\s*-1|SESSION_COOKIE_AGE\s*=\s*(\d{7,}|\d+\s*\*\s*\d+\s*\*\s*\d+\s*\*)|PERMANENT_SESSION_LIFETIME\s*=\s*timedelta\(\s*(days\s*=\s*([3-9]|\d{2,})|weeks)|maxAge\s*:\s*(\d+\s*\*\s*){3,}\d+|session\.gc_maxlifetime\s*=\s*\d{6,}|ExpireTimeSpan\s*=\s*TimeSpan\.From(Days|Hours\(\s*\d{3,})", "java py js php cs conf",
   "Set idle timeout (e.g. 15-30 min for FTI/PII apps) and an absolute lifetime; re-authenticate for sensitive actions.", owasp="A07")
@@ -208,9 +218,9 @@ R("SEC-FILE-2", "data", "Medium", "CWE-312", "Database dump / backup / data extr
   r"^$", "any", "Remove data extracts from source control; use synthetic data for tests; purge from history if they held real PII/FTI.", conf="Medium")  # file-level
 
 # ----------------------------------------------------------------------------- 8 CRYPTO
-R("CRY-1", "crypto", "Medium", "CWE-328", "Weak hash (MD5 / SHA-1)",
-  r"hashlib\.(md5|sha1)\(|MessageDigest\.getInstance\(\s*[\"'](MD5|SHA-?1)[\"']|createHash\(\s*[\"'](md5|sha1)[\"']|\b(md5|sha1)\s*\(\s*\$|Digest::(MD5|SHA1)|\bMD5(CryptoServiceProvider)?\.Create|SHA1(Managed|CryptoServiceProvider)?\.Create|md5\.New\(|sha1\.New\(", "py java js php rb cs go",
-  "Use SHA-256/384 (FIPS 140 validated module) for integrity; Argon2id/bcrypt/scrypt/PBKDF2 for passwords.", flags=I, owasp="A02")
+R("CRY-1", "crypto", "Low", "CWE-328", "Weak hash (MD5 / SHA-1)",
+  r"hashlib\.(md5|sha1)\((?![^)]*usedforsecurity\s*=\s*False)|MessageDigest\.getInstance\(\s*[\"'](MD5|SHA-?1)[\"']|createHash\(\s*[\"'](md5|sha1)[\"']|\b(md5|sha1)\s*\(\s*\$|Digest::(MD5|SHA1)|\bMD5(CryptoServiceProvider)?\.Create|SHA1(Managed|CryptoServiceProvider)?\.Create|md5\.New\(|sha1\.New\(", "py java js php rb cs go",
+  "Use SHA-256/384 (FIPS 140 validated module) for integrity; Argon2id/bcrypt/scrypt/PBKDF2 for passwords.", flags=I, owasp="A02", conf="Low")
 R("CRY-2", "crypto", "High", "CWE-916", "Password hashed with a fast general-purpose hash",
   r"(password|passwd|pwd)\w*.*\b(md5|sha1|sha256|sha512)\b|\b(md5|sha1|sha256)\b.*(password|passwd|pwd)", "py js java php rb cs go",
   "Use Argon2id, bcrypt (cost>=12), scrypt or PBKDF2 with >=600k iterations and a per-user salt.", flags=I, conf="Low", owasp="A02")
@@ -225,7 +235,8 @@ R("CRY-5", "crypto", "High", "CWE-338", "Non-cryptographic RNG used for security
   "Use secrets.token_urlsafe / crypto.randomBytes / SecureRandom / RandomNumberGenerator.", flags=I, owasp="A02")
 R("CRY-6", "crypto", "High", "CWE-295", "TLS certificate / hostname verification disabled",
   r"verify\s*=\s*False|rejectUnauthorized\s*:\s*false|InsecureSkipVerify\s*:\s*true|CURLOPT_SSL_VERIFY(PEER|HOST)[^;]*(false|0)|_create_unverified_context|NODE_TLS_REJECT_UNAUTHORIZED\W*[\"']?0|TrustAllCerts|ALLOW_ALL_HOSTNAME_VERIFIER|NoopHostnameVerifier|ServerCertificateValidationCallback\s*[+=].*true|check_hostname\s*=\s*False|SSL_VERIFYPEER\s*=>?\s*false|strict_ssl\s*=\s*false|-k\s+https|--insecure", "py js java cs php go rb sh conf yaml docker",
-  "Keep verification on; trust a private CA via a CA bundle instead of disabling checks.", flags=I, conf="High", owasp="A02")
+  "Keep verification on; trust a private CA via a CA bundle instead of disabling checks.", flags=I, conf="High", owasp="A02",
+  skip=r"(localhost|127\.0\.0\.1|\[::1\])")
 R("CRY-7", "crypto", "High", "CWE-326", "Obsolete TLS/SSL protocol or weak cipher configured",
   r"\b(SSLv2|SSLv3|TLSv1\.0|TLSv1\.1|TLSv1_0|TLSv1_1|PROTOCOL_SSLv23|PROTOCOL_TLSv1|TLS1_0|TLS1_1|Tls11|Tls10|Ssl3)\b|TLSv1(?![.\d_])|ssl_ciphers[^;\n]*(RC4|3DES|NULL|EXPORT|MD5|aNULL)|MinimumProtocolVersion\W+TLS1[01]|min_tls_version\W+[\"']?TLS1_[01]", "conf yaml py js java cs tf docker sh php",
   "Allow TLS 1.2+ only (prefer 1.3) with AEAD ciphers; require FIPS-approved suites for FTI.", owasp="A02")
@@ -237,16 +248,17 @@ R("CRY-8", "crypto", "Medium", "CWE-327", "Possible homegrown crypto / encoding 
 R("DATA-1", "data", "Medium", "CWE-311", "Sensitive field (SSN/TIN/account) in a plaintext column or field",
   r"\b(ssn|social_?security\w*|taxpayer_?id|tin|itin|ein|routing_?number|account_?number|bank_?account|card_?number|credit_?card|fti|tax_?return\w*|agi|date_of_birth|dob)\b[\"']?\s*(=\s*(models\.(Char|Text)Field|db\.Column\(\s*db\.(String|Text)|Column\(\s*(String|Text)|sa\.Column\(\s*sa\.(String|Text))|:\s*(str|string)\b|\s+(varchar|char|text|nvarchar)\b|\s+String\b)", "py java cs js sql php rb go",
   "Encrypt at the field level (AES-256-GCM via KMS-managed keys) or use database TDE plus column encryption; tokenize/mask SSNs; restrict reads.", flags=I)
-R("DATA-2", "data", "High", "CWE-532", "Sensitive data written to logs",
-  r"(log|logger|logging|console\.(log|info|debug|warn|error)|print|println|System\.out\.print\w*|Log\.\w+|fmt\.Print\w*|syslog|Write-Host)\W[^\n]*\b(ssn|social_?security|password|passwd|secret|token|authorization|bearer|taxpayer|tax_?id|card_?number|cvv|dob|date_of_birth|routing_?number|account_?number|fti)\b", "py js java cs php go rb sh",
-  "Never log secrets or PII/FTI; log opaque IDs; add a redaction filter at the logging framework level.", flags=I, owasp="A09")
+R("DATA-2", "data", "High", "CWE-532", "Sensitive value interpolated into a log message",
+  r"(log|logger|logging|console\.(log|info|debug|warn|error)|print|println|System\.out\.print\w*|Log\.\w+|fmt\.Print\w*|syslog)\W[^\n]*(\{[^}]*\b(ssn|social_?security\w*|password|passwd|secret|\w*_token|access_token|refresh_token|id_token|api_?key|authorization|bearer|taxpayer\w*|tax_?id|card_?number|cvv|dob|date_of_birth|routing_?number|account_?number|fti)\b[^}]*\}|[,+]\s*[\w.\[\]\"']*\b(ssn|social_?security\w*|password|passwd|secret|\w*_token|api_?key|authorization|taxpayer\w*|card_?number|cvv|routing_?number|account_?number)\b\s*[,)+]|%[sdr][^\n]*\b(ssn|password|passwd|secret|token|api_?key)\b)", "py js java cs php go rb sh",
+  "Never log secrets or PII/FTI; log opaque IDs; add a redaction filter at the logging framework level.", flags=I, owasp="A09",
+  skip=r"tokens?[\s_]*(count|used|usage|limit|budget|total)|(count|num|max|actual|total)_?tokens|expir|\b(len|length)\b|%s.{0,20}(status|duration|elapsed)")
 R("DATA-3", "data", "High", "CWE-532", "Full request/response body or object dumped to logs",
   r"(log|logger|logging|console\.\w+|print|System\.out\.print\w*)\W[^\n]*(req\.body|request\.(body|data|json|form|POST)|JSON\.stringify\(\s*(req|request|user|payload)|\.dump\(\)|%r\b.*request|response\.(text|content)\b|vars\(\s*request)", "py js java cs php go rb",
   "Log selected non-sensitive fields only.", flags=I, owasp="A09", conf="Low")
 R("DATA-4", "data", "High", "CWE-359", "Literal SSN-shaped value in source or fixtures",
   r"^$", "any", "Replace with synthetic values clearly out of valid range (e.g. 000-00-0000 is invalid; use test generators) and purge real data from history.", conf="Medium")  # handled in scanner
 R("DATA-5", "data", "Medium", "CWE-200", "Serializer/response exposes all fields (data exposure)",
-  r"fields\s*=\s*[\"']__all__[\"']|exclude\s*=\s*\(\s*\)|res\.(json|send)\(\s*(user|account|record|customer)\s*\)|jsonify\(\s*(user|account|customer)\.__dict__|return\s+(user|account|customer)\b\s*;?\s*$", "py js java cs",
+  r"fields\s*=\s*[\"']__all__[\"']|exclude\s*=\s*\(\s*\)|res\.(json|send)\(\s*(user|account|record|customer)\s*\)|jsonify\(\s*(user|account|customer)\.__dict__", "py js java cs",
   "Return explicit response DTOs/allowlisted fields; mask SSN to last 4; exclude password hashes and internal flags.", conf="Low", owasp="A01")
 R("DATA-6", "data", "Medium", "CWE-524", "Sensitive pages may be cached (no-store missing or public caching set)",
   r"Cache-Control[\"']?\s*[,:=]\s*[\"']?public|max-age=\d{5,}.*(account|profile|tax|return)", "py js java cs php conf",
@@ -266,9 +278,9 @@ R("API-2", "api", "Medium", "CWE-209", "GraphQL introspection / playground enabl
   r"introspection\s*[:=]\s*(true|True)|playground\s*[:=]\s*(true|True)|graphiql\s*[:=]\s*(true|True)|GRAPHIQL\s*=\s*True", "js py java cs yaml conf",
   "Disable introspection and IDEs in production; enforce depth/cost limits.", conf="Medium", owasp="A05")
 P("API-3", "api", "High", "CWE-306", "Route handlers with no authentication evidenced in the same file", "py js java cs php rb go",
-  r"@(app|router|bp|blueprint)\.(route|get|post|put|delete|patch)\(|app\.(get|post|put|delete|patch)\(|router\.(get|post|put|delete|patch)\(|@(Get|Post|Put|Delete|Patch|Request)Mapping|\[Http(Get|Post|Put|Delete)|Route::(get|post|put|delete)|r\.(GET|POST|PUT|DELETE)\(|path\(\s*[\"']",
+  r"@(app|router|bp|blueprint|\w+_router|\w+_bp)\.(route|get|post|put|delete|patch)\(|(?<![\w.])(app|router)\.(get|post|put|delete|patch)\(|@(Get|Post|Put|Delete|Patch|Request)Mapping|\[Http(Get|Post|Put|Delete)|Route::(get|post|put|delete)|(?-i:(?<![\w.])r\.(GET|POST|PUT|DELETE)\()|(?<![\w.])path\(\s*[\"']",
   r"authenticate|login_required|@PreAuthorize|@Secured|\[Authorize|passport|jwt|requires_auth|Depends\(|permission_classes|IsAuthenticated|authMiddleware|verifyToken|isAuthenticated|auth_required|RolesAllowed|hasRole|current_user|ensureLoggedIn|requireAuth|before_action\s*:authenticate|middleware\(\s*[\"']auth|authorize|bearer|api_key|session\[",
-  "Apply authentication by default (global middleware/filter) and explicitly mark public routes.", scope="file", owasp="A01", conf="Low")
+  "Apply authentication by default (global middleware/filter) and explicitly mark public routes.", scope="file", owasp="A01", conf="Low", aggregate=True)
 P("API-4", "api", "Medium", "CWE-770", "Rate limiting / throttling not evidenced", "py js java cs php rb go",
   r"express\(\)|Flask\(|FastAPI\(|@RestController|@Controller|\[ApiController\]|urlpatterns|Rails\.application|gin\.Default|mux\.NewRouter|Route::", r"rate.?limit|throttle|Limiter|slowapi|bucket4j|express-rate-limit|RateLimit|ratelimit|rack-attack|AspNetCoreRateLimit|Resilience4j|tollbooth|limiter",
   "Add per-IP and per-account throttling on login, MFA, password-reset and search/export endpoints (and at the WAF/gateway).", owasp="A04")
@@ -305,13 +317,13 @@ R("K8S-2", "iac", "Medium", "CWE-829", "Kubernetes image uses mutable tag or hos
   r"image:\s*\S+:latest\b|image:\s*[^\s:@]+\s*$|hostPath:|automountServiceAccountToken:\s*true|readOnlyRootFilesystem:\s*false", "yaml",
   "Pin images by digest, avoid hostPath, disable token automount where unused, mount rootfs read-only.", conf="Medium")
 R("DKR-1", "iac", "Medium", "CWE-250", "Dockerfile: unpinned base image, remote script piping, or insecure fetch",
-  r"^\s*FROM\s+\S+:latest\b|^\s*FROM\s+[^:\s@]+\s*(AS\s+\w+)?\s*$|^\s*ADD\s+https?://|curl[^\n|]*\|\s*(sudo\s+)?(ba)?sh|wget[^\n|]*\|\s*(sudo\s+)?(ba)?sh|--no-check-certificate|chmod\s+(-R\s+)?777|^\s*EXPOSE\s+22\b|apt-get\s+install(?![^\n]*--no-install-recommends)", "docker",
+  r"^\s*FROM\s+\S+:latest\b|^\s*FROM\s+[^:\s@]+\s*(AS\s+\w+)?\s*$|^\s*ADD\s+https?://|curl[^\n|]*\|\s*(sudo\s+)?(ba)?sh|wget[^\n|]*\|\s*(sudo\s+)?(ba)?sh|--no-check-certificate|chmod\s+(-R\s+)?777|^\s*EXPOSE\s+22\b", "docker",
   "Pin base images by digest, use COPY and checksum-verified downloads, avoid world-writable files, and don't expose SSH.", flags=re.M | I)
 R("DKR-2", "secrets", "High", "CWE-798", "Secret baked into Dockerfile ENV/ARG",
   r"^\s*(ENV|ARG)\s+\w*(PASSWORD|SECRET|TOKEN|API_?KEY|PRIVATE_?KEY)\w*[= ]\s*[^\s$][^\s]*", "docker",
   "Inject secrets at runtime (secrets manager, BuildKit --mount=type=secret); never bake into image layers.", flags=re.M | I, redact=True, owasp="A02")
 P("DKR-3", "iac", "Medium", "CWE-250", "Dockerfile has no non-root USER", "docker",
-  r"^\s*FROM\s", r"^\s*USER\s+(?!root\b|0\b)\S+", "Add a non-root USER before ENTRYPOINT/CMD.", scope="file", conf="Medium")
+  r"^\s*FROM\s", r"^\s*USER\s+(?!root\b|0\b)\S+", "Add a non-root USER before ENTRYPOINT/CMD.", scope="file", conf="Medium", aggregate=True)
 R("DKR-4", "iac", "High", "CWE-668", "docker-compose: privileged, host network, docker.sock, or data port published to all interfaces",
   r"privileged:\s*true|network_mode:\s*[\"']?host|/var/run/docker\.sock|[\"']?(0\.0\.0\.0:)?(5432|3306|27017|6379|9200|1433|5984|11211):(5432|3306|27017|6379|9200|1433|5984|11211)[\"']?", "docker",
   "Bind data ports to 127.0.0.1 or an internal network; avoid privileged mode and the Docker socket.")
@@ -349,3 +361,25 @@ R("ERR-1", "errors", "Medium", "CWE-209", "Stack trace or exception detail sent 
 P("ERR-2", "errors", "Medium", "CWE-755", "Global error handler / generic error page not evidenced", "py js java cs php rb go",
   r"express\(\)|Flask\(|FastAPI\(|@RestController|@Controller|\[ApiController\]|urlpatterns|Rails\.application|gin\.Default", r"errorhandler|@app\.errorhandler|ControllerAdvice|ExceptionHandler|app\.use\(\s*\(\s*err|handler500|UseExceptionHandler|rescue_from|uncaughtException|error_handler|exception_handler|ErrorBoundary|errorPage|error-page|ProblemDetails|IExceptionFilter|set_error_handler|Recovery\(\)",
   "Register a global handler that maps all unhandled exceptions to a generic response and logs the detail.", owasp="A05")
+
+
+# ----------------------------------------------------------------------------- secret value filter
+_KEY_BENIGN = re.compile(r"(?i)(_|\b)(path|file|dir|name|re|regex|pattern|url|uri|endpoint|marker|header|field|env|var|prefix|suffix|ttl|timeout|label|type|id|count|size|limit|max|min|budget|mode|model|format|key_name|secret_name|param|arg|flag)s?$")
+_PATHLIKE = re.compile(r"^(\.{0,2}/|[A-Za-z]:\\|~/|\$\{?\w+\}?/|\w+://[^:@\s]+$)")
+_ENVNAME = re.compile(r"^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$")
+_SNAKE = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)+$")
+_KEBAB = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9.]+)+$")
+_REFERENCE = re.compile(r"(?i)^(vault|secret|ssm|kms|env|file|aws-secret|gcp-secret|azure-kv)[:/][\w:/.\-{}]+$|^[A-Z][A-Z0-9_]*:[A-Z][A-Z0-9_./-]*$")
+_IDENT = re.compile(r"^[A-Za-z_][\w]*(\.[A-Za-z_]\w*)+(\(.*\))?$")
+
+
+def looks_secret(val, key=""):
+    """Heuristic: does a quoted/unquoted literal look like a credential value rather than a name, path or expression?"""
+    v = val.strip()
+    if _PATHLIKE.search(v) or _ENVNAME.match(v) or _SNAKE.match(v) or _IDENT.match(v) or _KEBAB.match(v) or _REFERENCE.match(v):
+        return False
+    if re.search(r"[(){}$`]|^\w+\[|^[a-z_]+\.\w+|\bor\b|\bnot\b|^[A-Z]\w+\(", v):
+        return False
+    if key and _KEY_BENIGN.search(key.strip("\"' ")):
+        return False
+    return True

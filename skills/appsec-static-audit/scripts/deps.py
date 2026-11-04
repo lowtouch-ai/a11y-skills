@@ -289,6 +289,7 @@ def sbom(components, app_name, app_version="unknown"):
 def analyze(components, root_files, osv_results=None):
     """Return dependency candidate findings (list of dicts, no IDs yet)."""
     findings = []
+    unpinned = {}
     names_by_dir = {}
     for c in components:
         names_by_dir.setdefault(os.path.dirname(c["file"]), set()).add(os.path.basename(c["file"]))
@@ -310,17 +311,18 @@ def analyze(components, root_files, osv_results=None):
                                  fix="Replace with a maintained alternative and remove the dependency.",
                                  confidence="High", owasp="A06"))
         spec = c["spec"] or ""
-        if c["ecosystem"] == "npm" and not c["version"] and re.search(r"^(\*|latest|x|)$|^(git|https?|github:|file:)", spec):
-            findings.append(dict(rule="DEP-3", domain="deps", severity="Medium", cwe="CWE-829",
-                                 title=f"Unpinned or non-registry dependency source: {c['name']}@{spec or '*'}",
-                                 file=c["file"], line=1, detail="Wildcard, 'latest', git or URL dependency defeats reproducible, reviewable builds.",
-                                 fix="Pin to a reviewed version from the registry and commit the lockfile.", confidence="Medium", owasp="A08"))
-        if c["ecosystem"] == "pypi" and c["file"].startswith("requirements") or (c["ecosystem"] == "pypi" and os.path.basename(c["file"]).startswith("requirements")):
-            if not c["version"]:
-                findings.append(dict(rule="DEP-3", domain="deps", severity="Low", cwe="CWE-829",
-                                     title=f"Unpinned Python dependency: {c['name']} ({spec})", file=c["file"], line=c["line"] or 1,
-                                     detail="No exact version pin; builds are not reproducible and may pull a vulnerable release.",
-                                     fix="Pin with == (preferably with --hash) or use a lockfile.", confidence="Medium", owasp="A08"))
+        if (c["ecosystem"] == "npm" and not c["version"] and re.search(r"^(\*|latest|x|)$|^(git|https?|github:|file:)", spec)) or \
+                (c["ecosystem"] == "pypi" and os.path.basename(c["file"]).startswith("requirements") and not c["version"]):
+            unpinned.setdefault((c["file"], c["ecosystem"]), []).append((c["name"], spec or "*", c["line"] or 1))
+    for (f, eco), items in unpinned.items():
+        names = ", ".join(f"{n} ({sp})" for n, sp, _ in items[:15]) + ("..." if len(items) > 15 else "")
+        findings.append(dict(rule="DEP-3", domain="deps", severity="Medium" if eco == "npm" else "Low", cwe="CWE-829",
+                             title=f"{len(items)} unpinned or non-registry {eco} dependenc{'y' if len(items) == 1 else 'ies'} in {os.path.basename(f)}",
+                             file=f, line=items[0][2],
+                             detail=f"No exact version pin (or git/URL source): {names}. Builds are not reproducible and may pull a vulnerable release.",
+                             fix="Pin exact versions (preferably with hashes) or commit a lockfile, and install with `npm ci` / `pip install --require-hashes`.",
+                             confidence="Medium", owasp="A08",
+                             locations=[dict(line=ln, snippet=f"{n} {sp}") for n, sp, ln in items[:25]]))
     # manifests without lockfiles
     for d, names in names_by_dir.items():
         if "package.json" in names and not names & set(LOCKFILES["npm"]):

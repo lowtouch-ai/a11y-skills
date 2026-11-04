@@ -47,13 +47,15 @@ def main():
         scan = json.load(open(os.path.join(out, "scan.json")))
         rules = {f["rule"] for f in scan["findings"]}
         expect = {"INJ-SQL-1", "INJ-SQL-2", "INJ-CMD-1", "INJ-CMD-2", "SSRF-1", "DESER-1", "XSS-1", "SSO-JWT-2", "SSO-SAML-1", "SSO-BYP-1",
-                  "SES-1", "SES-3", "CRY-1", "CRY-3", "CRY-4", "CRY-5", "CRY-6", "DATA-2", "DATA-4", "DATA-1", "API-1", "CFG-1", "CFG-2",
+                  "SES-1", "SES-1B", "SES-3", "DESER-2", "API-3", "CRY-1", "CRY-3", "CRY-4", "CRY-5", "CRY-6", "DATA-2", "DATA-4", "DATA-1", "API-1", "CFG-1", "CFG-2",
                   "IAC-1", "IAC-2", "IAC-3", "IAC-4", "IAC-5", "K8S-1", "DKR-1", "DKR-2", "DEP-1", "DEP-2", "DEP-3", "ERR-1", "ACC-2",
                   "MISC-PROMPT-1", "SEC-HIST-1", "SEC-AWS-ACCESS-KEY-ID", "PATH-1", "REDIR-1", "ACC-1"}
         missing = expect - rules
         assert not missing, f"scanner missed: {sorted(missing)}"
         assert any(r.startswith("SEC-") and r not in ("SEC-HIST-1",) for r in rules), "no secret findings"
-        assert any(f["rule"] == "API-3" for f in scan["findings"]) or True
+        noisy = [(f["rule"], f["file"]) for f in scan["findings"] if f["file"] in ("app/benign.py", "app/health.sh")]
+        assert not noisy, f"benign code raised findings: {noisy}"
+        assert len(scan["routes"]) >= 8 and any(r["auth"] == "none seen" for r in scan["routes"]), scan["routes"][:3]
         raw = json.dumps(scan)
         for secret in ("Winter2024Pass", "hunter2hunter2", "s3cr3t-prod-signing-key-9981", "123-45-6789", "a1B2c3D4e5F6g7H8i9J0k1L2", "AKIAIOSFODNN7EXAMPLE"):
             assert secret not in raw, f"secret leaked into scan.json: {secret}"
@@ -67,9 +69,9 @@ def main():
         bad = run(os.path.join(SCRIPTS, "render_report.py"), "--scan", os.path.join(out, "scan.json"), "--triage", tri_path, ok=False)
         assert bad.returncode == 2 and "no decision" in bad.stderr, bad.stderr
 
-        decisions = {f["id"]: "confirmed" for f in scan["findings"]}
-        fp = next(f for f in scan["findings"] if f["rule"] == "MISC-PROMPT-1")
-        decisions[fp["id"]] = {"decision": "false_positive", "reason": "kept for test of appendix"}
+        decisions = {f["id"]: "confirmed" for f in scan["findings"] if f["rule"] not in ("MISC-PROMPT-1", "CFG-4", "ERR-2")}
+        dup = next(f for f in scan["findings"] if f["rule"] == "CFG-4")
+        decisions[dup["id"]] = {"decision": "consolidated", "into": "FND-M01", "reason": "same missing-hardening theme"}
         checklist = {}
         for it in scan["checklist"]:
             if it["scanner_hits"]:
@@ -81,8 +83,12 @@ def main():
         tri = {"meta": {"customer": "Test Agency", "assessor": "pytest"}, "decisions": decisions,
                "new_findings": [{"title": "Manual: missing ownership check on case export", "domain": "access", "severity": "High", "cwe": "CWE-639",
                                  "file": "app/views.py", "line": 12, "description": "Export route returns any case by ID.", "fix": "Filter by owner.",
-                                 "evidence": 'row = Case.objects.get(id=request.args["id"])'}],
+                                 "evidence": 'headers = {"User-Agent": "Mozilla/5.0"}'}],
+               "bulk": [{"rule": "MISC-PROMPT-1", "decision": "false_positive", "reason": "bulk rule test"},
+                                       {"rule": "ERR-2", "file_regex": "server\\.js$", "decision": "false_positive", "reason": "bulk file_regex test"}],
                "checklist": {**checklist, first_hit["key"]: {"status": "Pass", "evidence": "x"}}}
+        tri["meta"].update({"application_description": "a multi-service test appliance", "fti_in_scope": False,
+                            "architecture_md": "```mermaid\nflowchart LR\n  A-->B\n```", "immediate_actions": ["Rotate the exposed credentials first."]})
         json.dump(tri, open(tri_path, "w"))
         bad = run(os.path.join(SCRIPTS, "render_report.py"), "--scan", os.path.join(out, "scan.json"), "--triage", tri_path, ok=False)
         assert bad.returncode == 2 and "PASS but confirmed findings" in bad.stderr, bad.stderr
@@ -100,6 +106,11 @@ def main():
         assert "| No. | Control / Issue | Status | Evidence |" in md
         assert "**CRITICAL**" in md
         assert "FND-M01" in md and "9.3.1" in md and "IS.003" in md
+        assert "Static analysis identified: Manual" not in md, "manual finding description must not be prefixed with boilerplate"
+        assert '"User-Agent": "Mozilla/5.0"' in md, "manual evidence must not be over-masked"
+        assert "a multi-service test appliance" in md and "public-facing application that handles" not in md
+        assert "FTI handling was not established" in md and "### 2.7 Architecture" in md and "1. Rotate the exposed credentials first." in md
+        assert "Route inventory" in md and "Consolidated into FND-M01" in md and "bulk rule test" in md and "OWASP Top 10 (2021) | A01" in md
         for secret in ("Winter2024Pass", "hunter2hunter2", "s3cr3t-prod-signing-key-9981", "123-45-6789", "a1B2c3D4e5F6g7H8i9J0k1L2", "AKIAIOSFODNN7EXAMPLE"):
             assert secret not in md, f"secret leaked into report: {secret}"
         print("OK:", os.path.basename(reports[0]), f"({len(md.splitlines())} lines, {len(scan['findings'])} candidates)")

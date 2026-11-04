@@ -55,8 +55,11 @@ FRAMEWORKS = {
 }
 
 
+BACKUP_RX = re.compile(r"(\.(bak|orig|old|backup|save|swp|tmp|rej)([-_.\w]*)?|~)$", re.I)
+
+
 def tags_for(rel):
-    name = os.path.basename(rel)
+    name = BACKUP_RX.sub("", os.path.basename(rel)) or os.path.basename(rel)
     low = name.lower()
     ext = os.path.splitext(low)[1]
     t = set()
@@ -174,9 +177,10 @@ class Collector:
         if c is None:
             sev = meta["severity"]
             note = ""
-            if ctx == "test" and meta["id"] != "MISC-PROMPT-1":
+            if ctx in ("test", "backup") and meta["id"] != "MISC-PROMPT-1":
                 sev = sev_down(sev)
-                note = " (located in test/fixture code; severity reduced one level, confirm no production reuse)"
+                note = (" (located in test/fixture code; severity reduced one level, confirm no production reuse)" if ctx == "test"
+                        else " (located in a backup/old copy of a file; severity reduced one level, confirm it is not deployed)")
             c = dict(rule=meta["id"], domain=meta["domain"], severity=sev, cwe=meta.get("cwe", ""), owasp=meta.get("owasp", ""),
                      title=extra_title or meta["title"], file=file, line=line, locations=[], detail=(detail or "") + note,
                      fix=meta["fix"], confidence=meta.get("confidence", "Medium"), context=ctx, source=source)
@@ -199,12 +203,13 @@ def scan_tree(root, max_kb, col):
     meta_by_id = {r["id"]: r for r in R.RULES}
     pres_state = {p["id"]: dict(when=None, found=False) for p in R.PRESENCE}
     inv = dict(files=0, by_lang={}, manifests=[], iac=[], frameworks=set(), skipped_binary=0, loc=0)
-    manifest_files, secret_hashes = [], set()
+    manifest_files, secret_hashes, agg = [], set(), {}
+    routes = []
     fw_rx = {k: re.compile(v, re.M | re.I) for k, v in FRAMEWORKS.items()}
     texts_for_deps = []
     for ap, rel, size in walk(root, max_kb):
         base = os.path.basename(rel)
-        ctx = "test" if TEST_RX.search(rel) else "source"
+        ctx = "test" if TEST_RX.search(rel) else "backup" if BACKUP_RX.search(base) else "source"
         if base in LOCK_NAMES or base.endswith((".min.js", ".min.css")):
             manifest_files.append((ap, rel))
             continue
@@ -237,6 +242,9 @@ def scan_tree(root, max_kb, col):
             scan_prompt_only(rel, text, ctx, meta_by_id, col)
             continue
 
+        if ctx == "source" and tags & {"py", "js", "java", "cs", "go", "php"}:
+            find_routes(rel, text, tags, routes)
+
         # ---- presence bookkeeping (repo + file scope)
         if ctx == "source":
             for p in R.PRESENCE:
@@ -252,10 +260,16 @@ def scan_tree(root, max_kb, col):
                     m = p["when"].search(text)
                     if m and not p["expect"].search(text):
                         ln = lineno(text, m.start())
-                        col.add_raw(dict(rule=p["id"], domain=p["domain"], severity=p["severity"], cwe=p["cwe"], owasp=p["owasp"],
-                                         title=p["title"], file=rel, line=ln, fix=p["fix"], confidence=p["confidence"],
-                                         detail="Control not evidenced in this file; it may be enforced elsewhere (gateway, base class, middleware). Confirm by reading the code.",
-                                         locations=[dict(line=ln, snippet=redact_line(text.splitlines()[ln - 1]))]))
+                        loc = dict(file=rel, line=ln, snippet=redact_line(text.splitlines()[ln - 1]))
+                        key = p["id"] if p["aggregate"] else (p["id"], rel)
+                        ag = agg.get(key)
+                        if ag is None:
+                            ag = agg[key] = dict(rule=p["id"], domain=p["domain"], severity=p["severity"], cwe=p["cwe"], owasp=p["owasp"],
+                                                 title=p["title"], file=rel, line=ln, fix=p["fix"], confidence=p["confidence"], locations=[], count=0,
+                                                 detail="Control not evidenced in the cited file(s); it may be enforced elsewhere (gateway, base class, middleware, IdP). Confirm by reading the code.")
+                        ag["count"] += 1
+                        if len(ag["locations"]) < 25:
+                            ag["locations"].append(loc)
 
         # ---- line rules
         applicable = [r for r in R.RULES if r["id"] not in ("SEC-FILE-1", "SEC-FILE-2", "DATA-4") and (r["langs"] & tags or "any" in r["langs"])]
@@ -265,7 +279,7 @@ def scan_tree(root, max_kb, col):
                 continue
             commented = is_comment(line)
             if generic_ok:
-                hit_secret = secret_scan(line)
+                hit_secret = secret_scan(line, tags, commented)
                 if hit_secret:
                     name, val, sev = hit_secret
                     m = dict(id="SEC-" + re.sub(r"[^A-Z0-9]+", "-", name.upper()).strip("-")[:28], domain="secrets", severity=sev,
@@ -281,15 +295,26 @@ def scan_tree(root, max_kb, col):
                     col.add(dict(id="DATA-4", domain="data", severity=sev, cwe="CWE-359", owasp="",
                                  title="Literal SSN-shaped value in source or fixtures",
                                  fix=meta_by_id["DATA-4"]["fix"], confidence="Medium"), rel, i, redact_line(line), ctx)
+            prose = PROSE_LINE.match(line) is not None
             for r in applicable:
                 if commented and r["id"] != "MISC-PROMPT-1":
+                    continue
+                if prose and r["id"] != "MISC-PROMPT-1":
                     continue
                 if r["only_files"] and not r["only_files"].search(rel):
                     continue
                 if r["rx"].search(line):
+                    if r["skip"] and r["skip"].search(line):
+                        continue
                     if r["id"] == "SSO-OIDC-2" and not re.search(r"(?i)(admin|role|permission|isAdmin|=)", line):
                         continue
                     col.add(r, rel, i, redact_line(line, force=r["redact"]), ctx)
+    for ag in agg.values():
+        if ag["count"] > len(ag["locations"]):
+            ag["detail"] += f" {ag['count']} file(s) matched; the first {len(ag['locations'])} are listed."
+        elif ag["count"] > 1:
+            ag["detail"] += f" {ag['count']} file(s) matched."
+        col.add_raw(ag)
     # repo-scope presence findings
     for p in R.PRESENCE:
         st = pres_state[p["id"]]
@@ -300,6 +325,7 @@ def scan_tree(root, max_kb, col):
                              detail="Relevant code exists but no matching control was found anywhere in the repository (absence of evidence, not proof). It may be delegated to the IdP, gateway or platform; confirm and document where.",
                              locations=[dict(line=ln, snippet=snip)]))
     inv["frameworks"] = sorted(inv["frameworks"])
+    inv["routes"] = routes
     return inv, manifest_files, secret_hashes
 
 
@@ -310,7 +336,14 @@ def scan_prompt_only(rel, text, ctx, meta_by_id, col):
             col.add(m, rel, i, redact_line(line), ctx)
 
 
-def secret_scan(line):
+PROSE_LINE = re.compile(r"^\s*\"(Description|Title|Message|Summary|PrimaryURL|References|FixedVersion|Text)\"\s*:", re.I)
+CONFIG_TAGS = {"env", "conf", "yaml", "sh", "tf", "docker"}
+
+
+def secret_scan(line, tags=None, commented=False):
+    """Return (name, value, severity) for a likely hardcoded secret on this line, else None."""
+    if commented and re.search(r"(?i)\b(example|e\.g\.|sample|for instance)\b", line):
+        return None
     for name, rx, sev in R.SECRET_PATTERNS + EXTRA_SECRET:
         m = rx.search(line)
         if m:
@@ -320,13 +353,57 @@ def secret_scan(line):
             return name, val, sev
     m = R.GENERIC_SECRET.search(line)
     if m:
-        val = m.group(3)
-        if not R.PLACEHOLDER.search(val) and not re.search(r"(?i)(process\.env|os\.environ|getenv|System\.getenv|config\.get|settings\.)", line):
+        val, key = m.group(3), m.group(1)
+        if (not R.PLACEHOLDER.search(val) and R.looks_secret(val, key)
+                and not re.search(r"(?i)(process\.env|os\.environ|getenv|System\.getenv|config\.get|settings\.|\.get\()", line)):
             return "Hardcoded credential literal", val, "High"
-    m = UNQUOTED_SECRET.match(line)
-    if m and not R.PLACEHOLDER.search(m.group(2)):
-        return "Hardcoded credential literal (config)", m.group(2), "High"
+    if tags is None or tags & CONFIG_TAGS:
+        m = UNQUOTED_SECRET.match(line)
+        if m and not R.PLACEHOLDER.search(m.group(2)) and R.looks_secret(m.group(2), m.group(1)):
+            return "Hardcoded credential literal (config)", m.group(2), "High"
     return None
+
+
+# --------------------------------------------------------------------------- route inventory
+ROUTE_PATTERNS = [
+    ("Flask/FastAPI", re.compile(r"@\s*\w+\.(get|post|put|delete|patch|head|options|route|api_route)\(\s*f?[\"']([^\"']*)[\"']"), {"py"}),
+    ("Express", re.compile(r"(?<![\w.])(app|router|\w+Router|\w+_router)\.(get|post|put|delete|patch|all)\(\s*[\"'`]([^\"'`]*)[\"'`]"), {"js"}),
+    ("Spring", re.compile(r"@(Get|Post|Put|Delete|Patch|Request)Mapping(?:\(\s*(?:value\s*=\s*|path\s*=\s*)?\{?\s*[\"']([^\"']*)[\"'])?"), {"java"}),
+    ("ASP.NET", re.compile(r"\[Http(Get|Post|Put|Delete|Patch)(?:\(\s*[\"']([^\"']*)[\"']\s*\))?\]"), {"cs"}),
+    ("Django", re.compile(r"(?<![\w.])(re_)?path\(\s*r?[\"']([^\"']*)[\"']"), {"py"}),
+    ("Go", re.compile(r"(?-i:(?<![\w])\w+\.(GET|POST|PUT|DELETE|PATCH|Handle|HandleFunc)\(\s*\"([^\"]*)\")"), {"go"}),
+    ("Laravel", re.compile(r"Route::(get|post|put|delete|patch)\(\s*[\"']([^\"']*)[\"']"), {"php"}),
+]
+AUTH_EVIDENCE = re.compile(r"(?i)login_required|permission_required|jwt_required|Depends\(|Security\(|authenticate|authorize|@PreAuthorize|@Secured|@RolesAllowed|requires_auth|auth_required|isAuthenticated|ensureAuth|ensureLoggedIn|verifyToken|passport\.|requireAuth|\bprotect\b|\bguard\b|bearer|IsAuthenticated|permission_classes|\[Authorize|current_user|require_login|before_action\s*:authenticate")
+ROUTER_LEVEL_AUTH = re.compile(r"(?i)dependencies\s*=\s*\[|(app|router)\.use\(\s*[\w.]*(auth|jwt|passport|protect|verify)|@(PreAuthorize|Secured|Authorize)[^\n]*\n\s*(public\s+)?(class|@)|\[Authorize\]\s*\n\s*(\[[^\n]*\]\s*\n\s*)*public\s+class|SecurityFilterChain|authorizeHttpRequests")
+PUBLIC_PATH = re.compile(r"(?i)^/?(health\w*|ping|ready\w*|live\w*|metrics|static|favicon\.ico|version|status|docs|openapi\.json|login|logout|callback)\b")
+
+
+def find_routes(rel, text, tags, out, cap=3000):
+    if len(out) >= cap:
+        return
+    lines = text.split("\n")
+    router_level = bool(ROUTER_LEVEL_AUTH.search(text))
+    for fw, rx, need in ROUTE_PATTERNS:
+        if not (tags & need):
+            continue
+        for m in rx.finditer(text):
+            ln = lineno(text, m.start())
+            window = "\n".join(lines[max(0, ln - 7):min(len(lines), ln + 3)])
+            g = [x for x in m.groups() if x is not None]
+            method = (g[0] if g and g[0].lower() in ("get", "post", "put", "delete", "patch", "head", "options", "route", "all", "request", "api_route", "handle", "handlefunc") else "ANY").upper()
+            path = next((x for x in reversed(g) if x and x.lower() != method.lower()), "")
+            if AUTH_EVIDENCE.search(window):
+                auth = "evidenced"
+            elif router_level:
+                auth = "router/class-level (verify)"
+            elif PUBLIC_PATH.match(path or ""):
+                auth = "public by convention"
+            else:
+                auth = "none seen"
+            out.append(dict(file=rel, line=ln, framework=fw, method=method, path=path or "(unspecified)", auth=auth))
+            if len(out) >= cap:
+                return
 
 
 # --------------------------------------------------------------------------- git history
@@ -383,10 +460,12 @@ def scan_history(root, max_commits, working_hashes, col, timeout=600):
         base = os.path.basename(fil)
         if base in LOCK_NAMES or base.endswith(".min.js") or os.path.splitext(base.lower())[1] in BINARY_EXT or len(line) > 2000:
             continue
-        hit = secret_scan(line[1:])
+        hit = secret_scan(line[1:], tags_for(fil), is_comment(line[1:]))
         if not hit:
             continue
         name, val, sev = hit
+        if TEST_RX.search(fil) and name.startswith("Hardcoded credential literal"):
+            continue  # generic literals in test code are not reported; specific key formats still are
         h = hashlib.sha1(val.encode()).hexdigest()
         key = (fil, h)
         if key in seen:
@@ -539,6 +618,7 @@ def main():
         inventory=dict(files_scanned=inv["files"], lines=inv["loc"], by_tag=dict(sorted(inv["by_lang"].items())), manifests=inv["manifests"],
                        iac_files=inv["iac"][:200], frameworks=inv["frameworks"], skipped_binary=inv["skipped_binary"],
                        skipped_large=getattr(walk, "skipped_large", [])),
+        routes=inv["routes"],
         dependencies=dict(total=len(comps), ecosystems=eco, sbom="sbom.cdx.json"),
         history=hist, sarif_imported=sarif_n, limitations=limitations, suppressed=suppressed,
         findings=cands, checklist=prefill_checklist(cands, os.path.join(HERE, "..", "references")),
