@@ -1,6 +1,25 @@
-# a11y-skills
+# krithi-skills
 
-Codex skills by lowtouch.ai.
+Reusable Codex skills from lowtouch.ai, built for the Krithi SDLC workflow.
+
+## What is Krithi?
+
+[Krithi](https://krithi.ai) is [lowtouch.ai](https://www.lowtouch.ai/agents/krithi/)'s agentic software delivery workflow. It turns a ticket into a reviewed pull request, running on the customer's own infrastructure (on-prem, private cloud or air-gapped), so code does not leave the customer's environment.
+
+Work moves through four stages, and a human approves each one before anything merges to main:
+
+| Stage | What happens |
+|---|---|
+| Plan | Requirements and sprint planning, with traceability back to legacy code and customer feedback. |
+| Code | Code is generated and self-reviewed against the approved requirement. |
+| Test | Playwright-based UI, API, performance and regression tests; defects go back to the coding stage. |
+| Compliance audit | Security scans (SAST, dependency, secrets) and accessibility checks against standards such as OWASP ASVS and WCAG 2.2 AA. |
+
+An orchestration agent routes each task to the model that suits it (Claude Code, Codex, Kimi or Gemma) and syncs status with Jira, Azure DevOps or ServiceNow. Krithi is aimed at engineering teams with a backlog and too few engineers, especially in regulated environments, for work such as legacy modernization, greenfield builds, data pipelines and platform migrations. lowtouch.ai also offers it as a managed service ([Velocity Pods](https://www.lowtouch.ai/agents/krithi/)), where its engineers run Krithi and own the review gates.
+
+The skills in this repository are reusable building blocks for that kind of work: accessibility scanning and agent-ready documentation.
+
+## Skills
 
 | Skill | What it does |
 |---|---|
@@ -12,11 +31,11 @@ Codex skills by lowtouch.ai.
 In Codex, run the command for the skill you want, then restart Codex.
 
 ```
-$skill-installer install https://github.com/lowtouch-ai/a11y-skills/tree/main/skills/wave-a11y-scan
+$skill-installer install https://github.com/lowtouch-ai/krithi-skills/tree/main/skills/wave-a11y-scan
 ```
 
 ```
-$skill-installer install https://github.com/lowtouch-ai/a11y-skills/tree/main/skills/repo-readme-generator
+$skill-installer install https://github.com/lowtouch-ai/krithi-skills/tree/main/skills/repo-readme-generator
 ```
 
 `wave-a11y-scan` installs its own dependencies (Playwright and Chromium, about 150 MB) the first time it runs.
