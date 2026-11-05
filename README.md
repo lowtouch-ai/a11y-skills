@@ -55,7 +55,15 @@ $repo-readme-generator document this repo fully
 
 ### Update
 
-To get the latest version, remove the installed folder and install it again, then restart Codex:
+To get the latest version, use either option, then restart Codex.
+
+Option 1: ask the installer to update from the URL:
+
+```
+$skill-installer update https://github.com/lowtouch-ai/krithi-skills/tree/main/skills/repo-readme-generator
+```
+
+Option 2: remove the installed folder and install it again:
 
 ```
 rm -rf ~/.codex/skills/repo-readme-generator
@@ -91,7 +99,15 @@ $appsec-static-audit audit this repository for security
 
 ### Update
 
-To get the latest version, remove the installed folder and install it again, then restart Codex:
+To get the latest version, use either option, then restart Codex.
+
+Option 1: ask the installer to update from the URL:
+
+```
+$skill-installer update https://github.com/lowtouch-ai/krithi-skills/tree/main/skills/appsec-static-audit
+```
+
+Option 2: remove the installed folder and install it again:
 
 ```
 rm -rf ~/.codex/skills/appsec-static-audit
@@ -135,7 +151,15 @@ $wave-a11y-scan scan https://example.com
 
 ### Update
 
-To get the latest version, remove the installed folder and install it again, then restart Codex:
+To get the latest version, use either option, then restart Codex.
+
+Option 1: ask the installer to update from the URL:
+
+```
+$skill-installer update https://github.com/lowtouch-ai/krithi-skills/tree/main/skills/wave-a11y-scan
+```
+
+Option 2: remove the installed folder and install it again:
 
 ```
 rm -rf ~/.codex/skills/wave-a11y-scan
