@@ -23,6 +23,7 @@ triage.json (written by the auditor after reading the code):
 """
 import argparse
 import glob
+import hashlib
 import json
 import os
 import re
@@ -37,7 +38,7 @@ from audit import redact_line  # noqa: E402
 REF = os.path.join(HERE, "..", "references")
 SEV = R.SEV
 STATUS_MAP = {"pass": "PASS", "fail": "FAIL", "partial": "PARTIAL", "n/a": "N/A", "na": "N/A", "not applicable": "N/A",
-              "not verified": "NOT VERIFIED", "nv": "NOT VERIFIED"}
+              "not verified": "NOT VERIFIED", "nv": "NOT VERIFIED", "not assessed": "NOT ASSESSED"}
 OPEN_STATES = {"Needs Review", "Not Assessed"}
 SEV_DEF = {
     "Critical": "Directly exploitable with severe impact (remote code execution, authentication bypass, exposure of live secrets or bulk SSN/FTI). Fix immediately.",
@@ -50,7 +51,8 @@ STATUS_DEF = [("PASS", "Control evidenced in the code/config reviewed; no defici
               ("FAIL", "Control missing or defeated; at least one confirmed finding."),
               ("PARTIAL", "Control present but incomplete, inconsistently applied, or only partly evidenced."),
               ("N/A", "Not applicable to this application (reason given in Evidence)."),
-              ("NOT VERIFIED", "Could not be determined from source alone (runtime, IdP or platform setting); needs confirmation.")]
+              ("NOT VERIFIED", "Could not be determined from source alone (runtime, IdP or platform setting); needs confirmation."),
+              ("NOT ASSESSED", "No reviewer decision was recorded for this control in this engagement (it was not reviewed); it must not be read as a pass.")]
 
 
 def cell(s):
@@ -108,6 +110,248 @@ def load_frameworks(extra):
     return fw
 
 
+def _bulk_match(b, f):
+    if b.get("rule") and not (f["rule"] == b["rule"] or (b["rule"].endswith("*") and f["rule"].startswith(b["rule"][:-1]))):
+        return False
+    if b.get("file_regex") and not re.search(b["file_regex"], f["file"]):
+        return False
+    if b.get("snippet_regex") and not re.search(b["snippet_regex"], " ".join(l.get("snippet", "") for l in f["locations"])):
+        return False
+    return bool(b.get("rule") or b.get("file_regex") or b.get("snippet_regex"))
+
+
+def previous_confirmed(ptri, pscan):
+    """What an earlier review confirmed: scanner candidates (with overrides applied) and hand-written findings."""
+    byfp = {f["fingerprint"]: f["id"] for f in pscan["findings"] if f.get("fingerprint")}
+    explicit = {byfp.get(k, k): (v.get("decision") if isinstance(v, dict) else v) for k, v in (ptri.get("decisions") or {}).items()}
+    ov = {byfp.get(k, k): v for k, v in (ptri.get("overrides") or {}).items()}
+    out = []
+    for f in pscan["findings"]:
+        d = explicit.get(f["id"])
+        if d is None and f.get("suppression"):
+            d = "accepted_risk" if f["suppression"].get("type") == "accepted_risk" else "false_positive"
+        if d is None:
+            d = next((b["decision"] for b in (ptri.get("bulk") or []) if _bulk_match(b, f)), None)
+        if str(d or "").lower().replace(" ", "_") != "confirmed":
+            continue
+        o = ov.get(f["id"]) or {}
+        out.append(dict(kind="scanner", id=f["id"], fp=f.get("fingerprint"), rule=f["rule"], title=o.get("title") or f["title"], severity=o.get("severity") or f["severity"],
+                        file=o.get("file") or f["file"], line=o.get("line") or f["line"], cwe=f.get("cwe") or o.get("cwe", "")))
+    for n in ptri.get("new_findings") or []:
+        out.append(dict(kind="manual", id=n.get("id", ""), key=n.get("key") or f"{n.get('file', '')}|{n.get('cwe', '')}|{n['domain']}", title=n["title"],
+                        severity=n["severity"], file=n.get("file", ""), line=n.get("line", 1), cwe=n.get("cwe", "")))
+    return out
+
+
+def source_revision(meta, git):
+    repos = meta.get("repositories")
+    if repos:
+        items = [f"{n}: {(g or {}).get('branch') or '—'} @ {(g or {}).get('commit') or 'not under git'}" for n, g in repos.items()]
+        return "; ".join(items[:8]) + (f" (+{len(items) - 8} more, see Appendix A)" if len(items) > 8 else "")
+    return f"{git.get('branch', '—')} @ {git.get('commit', '—')}" if git.get("commit") else "Not under git / unknown"
+
+
+def repository_revisions(meta, git):
+    repos = meta.get("repositories")
+    if repos:
+        lines = []
+        for n, g in list(repos.items())[:40]:
+            g = g or {}
+            lines.append(f"{n}: " + (f"`{g['commit_full']}` ({'uncommitted changes to tracked files' if g.get('dirty') else 'clean'})" if g.get("commit_full") else "not under git"))
+        return "<br>".join(lines) + (f"<br>…and {len(repos) - 40} more" if len(repos) > 40 else "")
+    return (f"`{git['commit_full']}`" + (" (working tree had uncommitted changes to tracked files)" if git.get("dirty") else " (clean)")) if git.get("commit_full") else "not under git"
+
+
+def norm_ws(x):
+    return re.sub(r"\s+", " ", x or "").strip()
+
+
+def _evidence_fragments(evidence):
+    parts = re.split(r"\.\.\.|…|\[MASKED\]|\*{4,}", evidence or "")
+    frags = [norm_ws(p) for p in parts]
+    return sorted([p for p in frags if len(p) >= 10], key=len, reverse=True)[:2]
+
+
+def resolve_repo_file(repos, rel):
+    """Absolute path of `rel` inside one of the repositories (also accepting `<repo-folder>/path` for multi-repository scans), or None."""
+    repos = [repos] if isinstance(repos, str) else list(repos or [])
+    for r in repos:
+        root = os.path.realpath(r)
+        cands = [rel or ""]
+        head = os.path.basename(root.rstrip(os.sep)) + "/"
+        if (rel or "").startswith(head):
+            cands.append(rel[len(head):])
+        for c in cands:
+            p = os.path.realpath(os.path.join(root, c))
+            if (p == root or p.startswith(root + os.sep)) and os.path.isfile(p):
+                return p
+    return None
+
+
+def check_evidence(repo, rel, line, evidence):
+    """Check a hand-written citation against the working tree. -> (line, message|None, corrected). Quoted evidence may be abbreviated with '...'."""
+    p = resolve_repo_file(repo, rel)
+    if p is None:
+        return line, f"'{rel}' is not in the working tree (expected only for a git-history finding; otherwise fix the path)", False
+    try:
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().split("\n")
+    except OSError:
+        return line, f"'{rel}' could not be read", False
+    if line < 1 or line > len(lines):
+        return line, f"{rel}:{line} is outside the file ({len(lines)} lines)", False
+    frags = _evidence_fragments(evidence)
+    if not frags:
+        return line, None, False
+    nl = [norm_ws(x) for x in lines]
+    if all(fr in " ".join(nl[max(0, line - 9):line + 8]) for fr in frags):
+        return line, None, False
+    single = [i + 1 for i in range(len(nl)) if frags[0] in nl[i]]
+    joined = [i + 1 for i in range(len(nl)) if frags[0] in " ".join(nl[i:i + 3])]
+    cands = single or joined
+    if cands:
+        best = min(cands, key=lambda c: abs(c - line))
+        return best, f"{rel}: cited line {line} but the quoted evidence is at line {best}; corrected", True
+    return line, f"{rel}:{line}: the quoted evidence was not found in the file", False
+
+
+def assign_manual_ids(manual, reg_path):
+    """Manual findings get IDs that survive re-renders: keyed by (file, CWE, domain) or an explicit `key`, remembered in finding-ids.json."""
+    try:
+        with open(reg_path, encoding="utf-8") as fh:
+            reg = json.load(fh)
+    except (OSError, ValueError):
+        reg = {}
+    m = reg.setdefault("manual", {})
+    used = {int(v) for v in m.values()}
+    nxt = max(used | {0}) + 1
+    seen = {}
+    taken = {}
+    for f in manual:
+        key = f["_mkey"]
+        seen[key] = seen.get(key, 0) + 1
+        k2 = key if seen[key] == 1 else f"{key}#{seen[key]}"
+        num = None
+        if f.get("_explicit_id"):
+            num = int(f["_explicit_id"][5:])
+            m[k2] = num
+        elif k2 in m:
+            num = int(m[k2])
+        if num is None:
+            while nxt in used or nxt in taken:
+                nxt += 1
+            num = nxt
+            m[k2] = num
+        used.add(num)
+        taken[num] = k2
+        f["id"] = f"FND-M{num:02d}"
+    try:
+        with open(reg_path, "w", encoding="utf-8") as fh:
+            json.dump(reg, fh, indent=1, sort_keys=True)
+    except OSError:
+        pass
+
+
+def masked_excerpt(repo, rel, line, context=22):
+    """Masked source lines around `line`. The path must resolve inside a repository."""
+    p = resolve_repo_file(repo, rel)
+    if p is None:
+        return "(file not available)"
+    try:
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().split("\n")
+    except OSError:
+        return "(file not readable)"
+    lo, hi = max(1, line - context), min(len(lines), line + context)
+    return "\n".join(f"{n:>5}  {redact_line(lines[n - 1]) if lines[n - 1].strip() else ''}" for n in range(lo, hi + 1))
+
+
+def write_packets(out, repo, crit_high, scan):
+    """One self-contained packet per Critical/High finding. A packet carries the claim and the code, deliberately NOT the
+    assessor's description, exploit scenario or impact, so the second reader forms their own view."""
+    os.makedirs(out, exist_ok=True)
+    index = ["# Verification packets\n",
+             "Give each packet to a reviewer (a fresh agent/session or a different person) who has **not** seen the original triage. "
+             "They answer from the code, then fill `verification.json` (template at the end of each packet). Save it as `work/verification.json` next to `scan.json`.\n",
+             "| ID | Severity | Claim | Packet | SHA-256 (start) |", "|---|---|---|---|---|"]
+    template = {}
+    manifest = {}
+    for f in crit_high:
+        locs = (f.get("locations") or [dict(line=f["line"])])[:3]
+        body = [f"# Verify {f['id']}: {f['title']}\n",
+                "You are the **second reader**. Decide from the code whether the claim below is true. You were not given the first reviewer's reasoning on purpose. "
+                "Open the callers and the framework configuration when the excerpt is not enough; do not assume a guard exists or does not exist.\n",
+                f"- **Claimed severity:** {f['severity']}", f"- **Weakness:** {f.get('cwe') or '-'}", f"- **Rule that raised it:** {f['rule']}",
+                f"- **Claim:** {f['title']}" + (f". Scanner note: {f['detail']}" if f.get("detail") else ""), ""]
+        for l in locs:
+            fl = l.get("file", f["file"])
+            body += [f"## `{fl}:{l['line']}`\n", "```text", masked_excerpt(repo, fl, int(l["line"])), "```\n"]
+        body += ["## Answer these\n",
+                 "1. Is the weakness really present in this code? Quote the lines.",
+                 "2. Can attacker-controlled input reach it, or is there a guard (validation, authorization, framework default, config)? Where?",
+                 "3. What is the realistic impact, and does the claimed severity fit?",
+                 "4. Give a verdict: `agree`, `disagree` or `inconclusive`.\n",
+                 "## Verdict template\n", "```json",
+                 json.dumps({f["id"]: {"verdict": "agree | disagree | inconclusive", "verifier": "name or agent", "session": "model / session id",
+                                       "independence": "independent | self", "packet_sha256": "output of: sha256sum " + f["id"] + ".md",
+                                       "severity_suggestion": "", "notes": "one or two sentences with file:line evidence"}}, indent=2), "```\n",
+                 "Secrets are masked in this packet. Do not write secret values anywhere."]
+        fn = f"{f['id']}.md"
+        text = "\n".join(body)
+        with open(os.path.join(out, fn), "w", encoding="utf-8") as fh:
+            fh.write(text)
+        sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        manifest[f["id"]] = dict(file=fn, sha256=sha)
+        index.append(f"| {f['id']} | {f['severity']} | {cell(f['title'])} | [{fn}]({fn}) | `{sha[:12]}` |")
+        template[f["id"]] = {"verdict": "", "verifier": "", "session": "", "independence": "independent", "packet_sha256": sha, "severity_suggestion": "", "notes": ""}
+    with open(os.path.join(out, "INDEX.md"), "w", encoding="utf-8") as fh:
+        fh.write("\n".join(index) + "\n")
+    with open(os.path.join(out, "verification.template.json"), "w", encoding="utf-8") as fh:
+        json.dump({"verifications": template}, fh, indent=2)
+    with open(os.path.join(out, "manifest.json"), "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=1, sort_keys=True)
+    print(f"Wrote {len(crit_high)} verification packet(s) to {out}")
+
+
+SARIF_SCORE = {"Critical": "9.5", "High": "8.0", "Medium": "5.5", "Low": "3.0", "Info": "0.5"}
+SARIF_LEVEL = {"Critical": "error", "High": "error", "Medium": "warning", "Low": "note", "Info": "note"}
+
+
+def build_sarif(scan, findings, rejected, accepted):
+    """SARIF 2.1.0 of the triaged result. Rejected and accepted-risk candidates are included as suppressed so a code-scanning
+    UI does not re-raise them. Snippets are already masked; fingerprints are stable across line moves."""
+    rules_meta, results = {}, []
+
+    def add(f, suppression=None):
+        rid = f["rule"] if f["rule"] != "MANUAL" else "MANUAL-" + re.sub(r"[^A-Z0-9]+", "-", f["title"].upper())[:30]
+        rules_meta.setdefault(rid, dict(id=rid, name=re.sub(r"[^A-Za-z0-9]+", "", f["title"].title())[:60] or rid, shortDescription=dict(text=f["title"][:200]),
+                                        help=dict(text=(f.get("fix") or "")[:1000]),
+                                        properties={"security-severity": SARIF_SCORE[f["severity"]], "tags": [t for t in ["security", f.get("cwe", ""), f.get("owasp", ""), f["domain"]] if t]}))
+        loc = f.get("locations") or [dict(line=f.get("line", 1))]
+        r = dict(ruleId=rid, level=SARIF_LEVEL[f["severity"]],
+                 message=dict(text=f"{f['title']}" + (f" ({first_sentence(f.get('description') or f.get('detail') or '', 220)})" if (f.get("description") or f.get("detail")) else "")),
+                 locations=[dict(physicalLocation=dict(artifactLocation=dict(uri=l.get("file", f["file"])), region=dict(startLine=max(1, int(l.get("line", 1) or 1)))))
+                            for l in loc[:5]],
+                 partialFingerprints={"appsecAudit/v1": f.get("fingerprint") or f["id"]},
+                 properties=dict(findingId=f["id"], severity=f["severity"], confirmed=(f["decision"] == "confirmed"), confidence=f.get("confidence", "")))
+        if suppression:
+            r["suppressions"] = [dict(kind="external", status="accepted", justification=suppression[:500])]
+        results.append(r)
+
+    for f in findings:
+        add(f)
+    for f, reason, _d in rejected:
+        add(f, reason or "rejected during triage")
+    for f, reason in accepted:
+        add(f, reason or "accepted risk")
+    return {"$schema": "https://json.schemastore.org/sarif-2.1.0.json", "version": "2.1.0",
+            "runs": [dict(tool=dict(driver=dict(name="appsec-static-audit", version=scan["meta"]["version"], informationUri="https://github.com/lowtouch-ai/krithi-skills",
+                                                 rules=list(rules_meta.values()))),
+                          results=results,
+                          properties=dict(repository=scan["meta"].get("repository", ""), commit=(scan["meta"].get("git") or {}).get("commit_full", ""),
+                                          scannerSha256=(scan["meta"].get("run") or {}).get("scanner_sha256", "")))]}
+
+
 def main():
     ap = argparse.ArgumentParser(description="Render the Markdown audit report")
     ap.add_argument("--scan", required=True, help="scan.json from audit.py")
@@ -116,7 +360,17 @@ def main():
     ap.add_argument("--prefix", default="security-audit-report")
     ap.add_argument("--framework", action="append", default=[], help="extra framework mapping JSON (repeatable)")
     ap.add_argument("--allow-untriaged", action="store_true", help="render even if candidates lack a decision")
-    ap.add_argument("--allow-unassessed", action="store_true", help="render even if checklist items are not finalised")
+    ap.add_argument("--allow-unassessed", action="store_true", help="(default behaviour since 1.2; kept for compatibility)")
+    ap.add_argument("--strict-checklist", action="store_true", help="refuse to render while any checklist item lacks a reviewer status")
+    ap.add_argument("--verification", help="verification.json from the independent second pass (default: <out>/work/verification.json if present)")
+    ap.add_argument("--packets", metavar="DIR", help="instead of rendering, write blind verification packets for confirmed Critical/High findings into DIR (needs --repo)")
+    ap.add_argument("--repo", action="append", default=[], help="repository path (repeat for a multi-repository scan; paths prefixed with the folder name are understood): used by --packets to quote masked excerpts, and to check that hand-written file:line citations and quoted evidence match the source")
+    ap.add_argument("--previous-triage", metavar="FILE", help="triage.json of an earlier review of the same code: the report lists every finding it confirmed that this review does not confirm, and why")
+    ap.add_argument("--previous-scan", metavar="FILE", help="scan.json belonging to --previous-triage (default: scan.json next to it)")
+    ap.add_argument("--strict-evidence", action="store_true", help="with --repo, treat a manual citation that does not match the source as an error instead of a warning")
+    ap.add_argument("--emit-sarif", action="store_true", help="also write a SARIF 2.1.0 file next to the report (confirmed and unconfirmed findings; rejected ones as suppressed)")
+    ap.add_argument("--fail-on", choices=["Critical", "High", "Medium", "Low"], help="exit with code 10 if a confirmed finding at or above this severity exists (for CI gates)")
+    ap.add_argument("--fail-on-unconfirmed", action="store_true", help="with --fail-on, count unconfirmed candidates too")
     a = ap.parse_args()
 
     scan = json.load(open(a.scan, encoding="utf-8"))
@@ -130,6 +384,31 @@ def main():
     meta = {**scan["meta"], **tri.get("meta", {})}
     errors, warnings = [], []
 
+    out_dir0 = a.out or os.path.dirname(os.path.abspath(a.scan))
+    # ---------------- hand-written citations must match the source
+    manual_items = [(n, n.get("file"), "line") for n in (tri.get("new_findings") or [])]
+    ov_locs = [(loc, loc.get("file") or (tri.get("overrides") or {}).get(k, {}).get("file"), "line") for k, ov in (tri.get("overrides") or {}).items() for loc in (ov.get("locations") or [])]
+    repos_ok = [r for r in (a.repo or []) if os.path.isdir(r)]
+    if repos_ok:
+        for n in tri.get("new_findings") or []:
+            ln, msg, fixed = check_evidence(repos_ok, n.get("file"), int(n.get("line", 1) or 1), n.get("evidence"))
+            if fixed:
+                n["line"] = ln
+            if msg:
+                (warnings if (fixed or not a.strict_evidence) else errors).append(f"manual finding '{n.get('title', '')[:50]}': {msg}")
+        for k, ov in (tri.get("overrides") or {}).items():
+            for loc in ov.get("locations") or []:
+                f_ = loc.get("file") or ov.get("file")
+                if not f_:
+                    continue
+                ln, msg, fixed = check_evidence(repos_ok, f_, int(loc.get("line", 1) or 1), loc.get("snippet"))
+                if fixed:
+                    loc["line"] = ln
+                if msg:
+                    (warnings if (fixed or not a.strict_evidence) else errors).append(f"{k} location: {msg}")
+    elif manual_items or ov_locs:
+        warnings.append("hand-written file:line citations and quoted evidence were not checked against the source (pass --repo <path> to validate them)")
+
     # ---------------- findings: apply triage
     decisions = {}
     reasons = {}
@@ -142,12 +421,19 @@ def main():
         else:
             decisions[k] = v
     overrides = tri.get("overrides") or {}
-    findings, rejected = [], []
+    findings, rejected, accepted, cand_log = [], [], [], []
     by_fp = {f["fingerprint"]: f["id"] for f in scan["findings"]}
     decisions = {by_fp.get(k, k): v for k, v in decisions.items()}
     overrides = {by_fp.get(k, k): v for k, v in overrides.items()}
     for f in scan["findings"]:
         d = decisions.get(f["id"])
+        via = "explicit" if d is not None else ""
+        if d is None and f.get("suppression"):
+            sp = f["suppression"]
+            via = "suppression"
+            d = "accepted_risk" if sp["type"] == "accepted_risk" else "false_positive"
+            reasons[f["id"]] = (f"Suppressed by policy ({sp.get('owner') or 'owner not stated'}"
+                                + (f", expires {sp['expires']}" if sp.get("expires") else "") + f"): {sp['reason']}")
         if d is None:
             for b in tri.get("bulk") or []:
                 if b.get("rule") and not (f["rule"] == b["rule"] or (b["rule"].endswith("*") and f["rule"].startswith(b["rule"][:-1]))):
@@ -159,6 +445,7 @@ def main():
                 if not (b.get("rule") or b.get("file_regex") or b.get("snippet_regex")):
                     continue
                 d, reasons[f["id"]] = b["decision"], b.get("reason", "")
+                via = "bulk"
                 if b.get("into"):
                     into[f["id"]] = b["into"]
                 break
@@ -167,12 +454,18 @@ def main():
                 errors.append(f"candidate {f['id']} ({f['rule']} {f['file']}:{f['line']}) has no decision in triage.json")
             d = "needs_review"
         d = d.lower().replace(" ", "_")
-        if d not in ("confirmed", "false_positive", "needs_review", "consolidated"):
+        if d not in ("confirmed", "false_positive", "needs_review", "consolidated", "accepted_risk"):
             errors.append(f"{f['id']}: unknown decision '{d}'")
         f = {**f, **{k: v for k, v in (overrides.get(f["id"]) or {}).items() if k != "controls_extra"}}
         f["controls_extra"] = (overrides.get(f["id"]) or {}).get("controls_extra", {})
         f["decision"] = d
-        if d in ("false_positive", "consolidated"):
+        f["decided_by"] = via or "none"
+        cand_log.append(f)
+        if d == "accepted_risk":
+            if not reasons.get(f["id"]):
+                errors.append(f"{f['id']}: accepted_risk needs a reason (and should name an owner and expiry)")
+            accepted.append((f, reasons.get(f["id"], "")))
+        elif d in ("false_positive", "consolidated"):
             if not reasons.get(f["id"]):
                 warnings.append(f"{f['id']} rejected without a reason")
             if d == "consolidated" and not into.get(f["id"]):
@@ -180,20 +473,39 @@ def main():
             rejected.append((f, ("Consolidated into " + into[f["id"]] + ". " if into.get(f["id"]) else "") + reasons.get(f["id"], ""), d))
         else:
             findings.append(f)
+    reason_counts = {}
+    for f_, r_, _d in rejected:
+        if r_.strip() and f_.get("decided_by") in ("explicit", "bulk"):
+            reason_counts.setdefault(norm_ws(r_).lower()[:220], []).append(f_)
+    shared_reasons = []
+    for k, fs_ in reason_counts.items():
+        n_exp = sum(1 for x in fs_ if x["decided_by"] == "explicit")
+        n_bulk = len(fs_) - n_exp
+        if n_exp >= 5 or n_bulk >= 25:
+            shared_reasons.append((fs_[0]["id"], len(fs_), k))
+            warnings.append(f"{len(fs_)} candidates were rejected with the identical reason \"{k[:90]}…\" ({'by bulk rules' if n_bulk >= n_exp else 'individually'}): "
+                            "confirm each was read, or record candidate-specific evidence")
+    manual_list = []
     for n in tri.get("new_findings") or []:
         loc_line = int(n.get("line", 1) or 1)
-        findings.append(dict(id="", rule="MANUAL", domain=n["domain"], severity=n["severity"], cwe=n.get("cwe", ""), owasp=n.get("owasp") or owasp_for(n.get("cwe", "")),
+        explicit = n.get("id") if re.fullmatch(r"FND-M\d{1,4}", str(n.get("id", ""))) else None
+        manual_list.append(dict(id="", rule="MANUAL", domain=n["domain"], severity=n["severity"], cwe=n.get("cwe", ""), owasp=n.get("owasp") or owasp_for(n.get("cwe", "")),
                              title=n["title"], file=n.get("file", "(multiple)"), line=loc_line, description=n.get("description", ""), detail="",
                              fix=n.get("fix", ""), impact=n.get("impact", ""), exploit_scenario=n.get("exploit_scenario", ""),
                              locations=[dict(line=loc_line, snippet=redact_line(n.get("evidence", "")))] if n.get("evidence") else [],
                              confidence=n.get("confidence", "High"), decision="confirmed", source="manual", status="Open",
-                             controls_extra=n.get("controls_extra", {})))
+                             controls_extra=n.get("controls_extra", {}), patch=n.get("patch", ""),
+                             _mkey=n.get("key") or f"{n.get('file', '')}|{n.get('cwe', '')}|{n['domain']}", _explicit_id=explicit))
+    assign_manual_ids(manual_list, os.path.join(os.path.dirname(os.path.abspath(a.scan)), "finding-ids.json"))
+    ids_seen = {}
+    for mf in manual_list:
+        if mf["id"] in ids_seen:
+            errors.append(f"two manual findings share the ID {mf['id']} ('{ids_seen[mf['id']]}' and '{mf['title']}'); give each a distinct `id` or `key`")
+        ids_seen[mf["id"]] = mf["title"]
+    findings.extend(manual_list)
     findings.sort(key=lambda f: (SEV.index(f["severity"]), dom_order.index(f["domain"]) if f["domain"] in dom_order else 99, f["file"], f["line"]))
-    n_manual = 0
+    n_manual = len(manual_list)
     for f in findings:
-        if not f["id"]:
-            n_manual += 1
-            f["id"] = f"FND-M{n_manual:02d}"
         f["owasp"] = f.get("owasp") or owasp_for(f.get("cwe", ""))
         if f["domain"] not in dom_title:
             errors.append(f"{f['id']}: unknown domain '{f['domain']}'")
@@ -203,21 +515,146 @@ def main():
     confirmed = [f for f in findings if f["decision"] == "confirmed"]
     unconfirmed = [f for f in findings if f["decision"] == "needs_review"]
     fid = {f["id"] for f in findings}
+    unconfirmed_ids = {f["id"] for f in unconfirmed}
+    via_counts = {k: sum(1 for c in cand_log if c["decided_by"] == k) for k in ("explicit", "bulk", "suppression", "none")}
+    ch_log = [c for c in cand_log if c["severity"] in ("Critical", "High")]
+    ch_bulk = [c for c in ch_log if c["decided_by"] == "bulk"]
+    ch_bulk_kinds = {k: sum(1 for c in ch_bulk if c["decision"] == k) for k in ("needs_review", "consolidated", "false_positive", "confirmed")}
+    if len(ch_bulk) >= 20 and len(ch_bulk) * 2 >= len(ch_log):
+        warnings.append(f"{len(ch_bulk)} of {len(ch_log)} Critical/High candidates were dispositioned by bulk rules rather than one by one")
+    prev = None
+    if a.previous_triage:
+        try:
+            ps = a.previous_scan or os.path.join(os.path.dirname(os.path.abspath(a.previous_triage)), "scan.json")
+            with open(a.previous_triage, encoding="utf-8") as fh:
+                ptri = json.load(fh)
+            with open(ps, encoding="utf-8") as fh:
+                pscan = json.load(fh)
+            pc = previous_confirmed(ptri, pscan)
+            cur_conf = [f for f in findings if f["decision"] == "confirmed"]
+            state_by_fp = {c.get("fingerprint"): c for c in cand_log if c.get("fingerprint")}
+            state_by_rf = {(c["rule"], c["file"]): c for c in cand_log}
+            carried, dropped = [], []
+            for p in pc:
+                hit = None
+                if p["kind"] == "scanner":
+                    hit = next((f for f in cur_conf if f.get("fingerprint") and f["fingerprint"] == p["fp"]), None)
+                else:
+                    hit = next((f for f in cur_conf if f.get("_mkey") == p["key"] or norm_ws(f["title"]).lower() == norm_ws(p["title"]).lower()), None)
+                if hit is None and p["file"]:                 # reworded or re-homed: same file and weakness class
+                    hit = next((f for f in cur_conf if f["file"] == p["file"] and p["cwe"] and f.get("cwe") == p["cwe"]), None)
+                if hit is not None:
+                    carried.append((p, hit))
+                    continue
+                st = state_by_fp.get(p.get("fp")) or state_by_rf.get((p.get("rule"), p["file"])) if p["kind"] == "scanner" else None
+                if st is not None:
+                    why = {"needs_review": "now an unconfirmed candidate", "false_positive": "now rejected as a false positive", "consolidated": "now consolidated into " + str(into.get(st["id"], "another finding")),
+                           "accepted_risk": "now an accepted risk"}.get(st["decision"], "now " + st["decision"])
+                    why += f" ({st['id']}" + (f": {reasons.get(st['id'], '')[:110]}" if reasons.get(st["id"]) else "") + ")"
+                elif p["kind"] == "scanner":
+                    why = "no longer detected in this scan (fixed, moved, excluded, or the rule changed)"
+                else:
+                    why = "not re-raised: no finding in this review matches it"
+                dropped.append((p, why))
+            prev = dict(path=os.path.basename(os.path.dirname(os.path.abspath(a.previous_triage))) or a.previous_triage, at=(pscan.get("meta") or {}).get("scanned_at", ""),
+                        total=len(pc), carried=carried, dropped=dropped)
+            if dropped:
+                warnings.append(f"{len(dropped)} of {len(pc)} findings confirmed in the previous review are not confirmed in this one (see Section 3.5)")
+        except (OSError, ValueError, KeyError) as e:
+            errors.append(f"--previous-triage could not be used: {e}")
+    consolidated_into_unconfirmed = [f_ for f_, _r, d_ in rejected if d_ == "consolidated" and into.get(f_["id"]) in unconfirmed_ids]
+    for f_, _r, d_ in rejected:
+        if d_ == "consolidated" and into.get(f_["id"]) and into[f_["id"]] not in fid and not str(into[f_["id"]]).startswith("FND-M"):
+            warnings.append(f"{f_['id']} is consolidated into {into[f_['id']]}, which is not a finding in this report")
+
+    # ---------------- independent verification of Critical/High findings
+    out_dir_guess = a.out or os.path.dirname(os.path.abspath(a.scan))
+    vpath = a.verification or os.path.join(out_dir_guess, "work", "verification.json")
+    ver_entries = {}
+    if os.path.exists(vpath):
+        try:
+            vj = json.load(open(vpath, encoding="utf-8"))
+            ver_entries = vj.get("verifications", vj) if isinstance(vj, dict) else {}
+        except (OSError, ValueError) as e:
+            errors.append(f"verification file {vpath} unreadable: {e}")
+    elif a.verification:
+        errors.append(f"verification file {a.verification} not found")
+    resolution = tri.get("verification_resolution") or {}
+    manifest = {}
+    try:
+        with open(os.path.join(out_dir_guess, "work", "verify", "manifest.json"), encoding="utf-8") as fh:
+            manifest = json.load(fh)
+    except (OSError, ValueError):
+        manifest = {}
+    vstat = dict(agree=0, disagree=0, disagree_resolved=0, inconclusive=0, missing=0, self_only=0, unbound=0, stale=0)
+    crit_high = [f for f in confirmed if f["severity"] in ("Critical", "High")]
+    for f in crit_high:
+        v = ver_entries.get(f["id"]) or ver_entries.get(f.get("fingerprint", ""))
+        if not v:
+            vstat["missing"] += 1
+            f["verification"] = dict(verdict="not verified")
+            continue
+        verdict = str(v.get("verdict", "")).strip().lower()
+        if verdict not in ("agree", "disagree", "inconclusive"):
+            errors.append(f"{f['id']}: verification verdict must be agree, disagree or inconclusive (got '{verdict}')")
+            continue
+        indep = "self" if "self" in str(v.get("independence", v.get("verifier", ""))).lower() else "independent"
+        psha = str(v.get("packet_sha256", "")).strip().lower()
+        want = ((manifest.get(f["id"]) or {}).get("sha256") or "").lower()
+        binding = "bound" if (psha and want and psha == want) else "stale" if (psha and want) else "unbound"
+        f["verification"] = dict(verdict=verdict, verifier=v.get("verifier", "unspecified"), independence=indep, notes=(v.get("notes") or "").strip(),
+                                 severity_suggestion=v.get("severity_suggestion", ""), binding=binding, session=str(v.get("session", v.get("model", "")))[:60])
+        if indep == "self":
+            vstat["self_only"] += 1
+        elif binding != "bound":
+            vstat[binding] += 1
+            if binding == "stale":
+                warnings.append(f"{f['id']}: the verification refers to an older version of the packet (the code excerpt or claim changed since it was reviewed); re-verify")
+        if verdict == "disagree":
+            res_note = (resolution.get(f["id"]) or "").strip()
+            if not res_note:
+                errors.append(f"{f['id']}: the verifier disagrees ({f['verification']['notes'][:120] or 'no notes'}). Re-read the code, then either change the decision/severity or record why the finding stands in triage.json verification_resolution")
+            else:
+                f["verification"]["resolution"] = res_note
+                vstat["disagree_resolved"] += 1
+            vstat["disagree"] += 1
+        else:
+            vstat[verdict] += 1
+
+    if a.packets:
+        if not repos_ok:
+            sys.exit("error: --packets needs --repo <path to the audited repository> (repeat it for a multi-repository scan)")
+        if errors:
+            print("Cannot build packets, fix triage.json:", file=sys.stderr)
+            for e in errors:
+                print("  - " + e, file=sys.stderr)
+            sys.exit(2)
+        write_packets(a.packets, repos_ok, crit_high, scan)
+        return
 
     # ---------------- checklist: apply triage
     cl_in = tri.get("checklist") or {}
     checklist = []
+    n_unassessed = 0
     for it in scan["checklist"]:
         t = cl_in.get(it["key"], {})
         raw = (t.get("status") or it["status"]).strip()
-        st = STATUS_MAP.get(raw.lower(), raw if raw in OPEN_STATES else "")
+        is_open = raw in OPEN_STATES
+        st = raw if is_open else STATUS_MAP.get(raw.lower(), "")
         if not st:
             errors.append(f"{it['key']}: invalid status '{raw}'")
             st = "NOT VERIFIED"
         linked = [x for x in (t.get("findings") if "findings" in t else it["finding_ids"]) if x in fid]
         conf_linked = [x for x in linked if any(f["id"] == x and f["decision"] == "confirmed" for f in findings)]
-        if st in OPEN_STATES and not a.allow_unassessed:
-            errors.append(f"checklist {it['key']} ({it['issue'][:50]}) is still '{st}'; set Pass/Fail/Partial/N/A/Not Verified")
+        derived = ""
+        if is_open:
+            if a.strict_checklist:
+                errors.append(f"checklist {it['key']} ({it['issue'][:50]}) is still '{st}'; set Pass/Fail/Partial/N/A/Not Verified")
+            elif conf_linked:
+                st, derived = "FAIL", "Derived from the confirmed finding(s) linked to this control; the control was not otherwise reviewed."
+            else:
+                st, derived = "NOT ASSESSED", "No reviewer decision was recorded for this control."
+                n_unassessed += 1
         if st == "PASS":
             if not (t.get("evidence") or "").strip():
                 errors.append(f"checklist {it['key']} is PASS but has no evidence (state what you read, with file paths)")
@@ -225,12 +662,12 @@ def main():
                 errors.append(f"checklist {it['key']} is PASS but confirmed findings are linked: {', '.join(conf_linked)}")
         if st in ("FAIL", "PARTIAL") and not conf_linked:
             warnings.append(f"checklist {it['key']} is {st} with no confirmed finding linked")
-        ev = (t.get("evidence") or "").strip()
+        ev = (t.get("evidence") or "").strip() or derived
         if linked and st in ("FAIL", "PARTIAL"):
             ev = (ev + " " if ev else "") + "See " + ", ".join(linked) + "."
-        if st in OPEN_STATES:
-            ev = ev or "Not yet assessed."
         checklist.append({**it, "status": st, "evidence": ev, "linked": linked})
+    if n_unassessed:
+        warnings.append(f"{n_unassessed} checklist item(s) were not assessed and are reported as NOT ASSESSED")
     if errors:
         print("Cannot render, fix triage.json:", file=sys.stderr)
         for e in errors:
@@ -249,9 +686,48 @@ def main():
     def eotss_label(e):
         return f"{e['id']} {e['title']}" if e.get("id") else f"{e['title']}*"
 
+    def ver_label(v):
+        if v["verdict"] == "not verified":
+            return "Not re-checked by a second pass"
+        who = v.get("verifier") or "unspecified"
+        if v.get("independence") == "self":
+            kind = "same assessor, second pass"
+        else:
+            kind = {"bound": "independence reported by the reviewer; response tied to the verification packet",
+                    "stale": "independence reported by the reviewer; packet changed since the review",
+                    "unbound": "independence reported by the reviewer; not tied to a verification packet"}[v.get("binding", "unbound")]
+        if v.get("session"):
+            who += f", {v['session']}"
+        txt = {"agree": "Agreed", "disagree": "Disputed", "inconclusive": "Inconclusive"}[v["verdict"]] + f" ({kind}: {who})"
+        if v.get("notes"):
+            txt += ". " + v["notes"]
+        if v.get("resolution"):
+            txt += ". Assessor resolution: " + v["resolution"]
+        return txt
+
     def sev_counts(fs):
         return {s: sum(1 for f in fs if f["severity"] == s) for s in SEV}
 
+    comps = scan.get("components") or []
+    rc_raw = (tri.get("meta") or {}).get("review_coverage") or tri.get("review_coverage") or {}
+    def rc_status(name):
+        v = rc_raw.get(name)
+        st_ = (v.get("status") if isinstance(v, dict) else v) or "Not recorded"
+        return st_, (v.get("notes", "") if isinstance(v, dict) else "")
+    tot_lines = sum(c["lines"] for c in comps) or 1
+    rev_c = [c for c in comps if rc_status(c["component"])[0].lower().startswith("reviewed")]
+    part_c = [c for c in comps if rc_status(c["component"])[0].lower().startswith("partial")]
+    if comps and rc_raw:
+        review_line = (f"Manual code review coverage recorded by the assessor: {len(rev_c)} of {len(comps)} components reviewed in full "
+                       f"({sum(c['lines'] for c in rev_c) * 100 // tot_lines}% of lines), {len(part_c)} partially, "
+                       f"{len(comps) - len(rev_c) - len(part_c)} not reviewed or not recorded. Automated detection covered every scanned file; see Appendix A.2.")
+        for c in comps:
+            if (c["critical"] or c["high"]) and not rc_status(c["component"])[0].lower().startswith("reviewed"):
+                warnings.append(f"component '{c['component']}' has {c['critical']} Critical / {c['high']} High candidate(s) but is not recorded as reviewed")
+    elif comps:
+        review_line = "Manual review coverage by component was not recorded; treat areas without a confirmed finding as scanned by pattern only, not as reviewed."
+    else:
+        review_line = ""
     now = datetime.now().astimezone()
     stamp = now.strftime("%Y%m%d-%H%M%S")
     app = meta.get("application", "Application")
@@ -268,7 +744,7 @@ def main():
         ["Report ID", rid],
         ["Customer", meta.get("customer", "—")],
         ["Application", f"{app} ({meta.get('repository', '')})"],
-        ["Source revision", f"{git.get('branch', '—')} @ {git.get('commit', '—')}" if git.get("commit") else "Not under git / unknown"],
+        ["Source revision", source_revision(meta, git)],
         ["Assessment type", "Static source-code security analysis (SAST, secrets, dependencies, IaC); no live testing"],
         ["Assessment date", now.strftime("%Y-%m-%d %H:%M %Z")],
         ["Prepared by", meta.get("assessor", "appsec-static-audit (automated scan with manual code review)")],
@@ -314,6 +790,13 @@ def main():
     w(table(["Severity", "Confirmed", "Unconfirmed", "Definition"],
             [[s, sc[s], sev_counts(unconfirmed)[s], SEV_DEF[s]] for s in SEV] + [["**Total**", f"**{len(confirmed)}**", f"**{len(unconfirmed)}**", ""]]))
 
+    if accepted:
+        w(f"\n{len(accepted)} further candidate(s) are covered by accepted-risk or false-positive suppression entries and are not counted above (Section 3.3).")
+    if crit_high:
+        w(f"\nIndependent verification: {len(crit_high) - vstat['missing']} of {len(crit_high)} Critical/High findings were re-checked by a second pass "
+          f"({vstat['agree']} agreed, {vstat['disagree']} disputed, {vstat['inconclusive']} inconclusive; {vstat['self_only']} by the same assessor rather than an independent reviewer; "
+          f"{vstat['unbound'] + vstat['stale']} reported independent but not tied to a current verification packet, so independence rests on the reviewer's statement)."
+          + (f" {vstat['missing']} were not re-checked." if vstat["missing"] else ""))
     w("\n### 1.4 Posture by Control Domain\n")
     rows = []
     for i, dk in enumerate(dom_order, 1):
@@ -321,8 +804,8 @@ def main():
         cnt = lambda s: sum(1 for c in items if c["status"] == s)
         ds = [f for f in confirmed if f["domain"] == dk]
         worst = next((s for s in SEV if any(f["severity"] == s for f in ds)), "None")
-        rows.append([f"4.{i}", dom_title[dk], len(items), cnt("PASS"), cnt("PARTIAL"), cnt("FAIL"), cnt("NOT VERIFIED") + cnt("N/A"), len(ds), worst])
-    w(table(["Section", "Domain", "Checks", "Pass", "Partial", "Fail", "N/A or Not verified", "Findings", "Highest severity"], rows))
+        rows.append([f"4.{i}", dom_title[dk], len(items), cnt("PASS"), cnt("PARTIAL"), cnt("FAIL"), cnt("NOT VERIFIED") + cnt("N/A"), cnt("NOT ASSESSED"), len(ds), worst])
+    w(table(["Section", "Domain", "Checks", "Pass", "Partial", "Fail", "N/A or Not verified", "Not assessed", "Findings", "Highest severity"], rows))
 
     w("\n### 1.5 Highest-Priority Issues\n")
     top = [f for f in confirmed if f["severity"] in ("Critical", "High")][:10]
@@ -368,7 +851,7 @@ def main():
     w("\n### 2.5 Checklist Status Definitions\n")
     w(table(["Status", "Meaning"], [[a_, b_] for a_, b_ in STATUS_DEF]))
     w("\n### 2.6 Limitations and Assumptions\n")
-    w("\n".join(f"- {x}" for x in scan["limitations"]) +
+    w("\n".join(f"- {x}" for x in scan["limitations"] + ([review_line] if review_line else [])) +
       "\n- Absence of a finding in a domain is not a guarantee of security. Source-only review cannot confirm controls enforced outside the repository.\n"
       "- Severity reflects code-level exploitability and data sensitivity; it should be re-rated with deployment context (network exposure, compensating controls).")
 
@@ -398,6 +881,34 @@ def main():
                  for i, f in enumerate(findings, 1)]))
     else:
         w("No findings.")
+    if accepted:
+        w("\n### 3.3 Accepted Risks and Suppressions\n")
+        w("These candidates match a suppression policy entry. They are **not** counted as findings, but the risk remains until it is fixed or the entry expires; review them at the stated expiry.\n")
+        w(table(["ID", "Severity", "Issue", "Location", "Reason, owner and expiry"], [[f["id"], f["severity"], f["title"], loc_str(f), r_] for f, r_ in accepted]))
+    ch = scan.get("changes")
+    if ch:
+        w("\n### 3.4 Changes Since the Previous Scan\n")
+        gone = ch.get("no_longer_detected", [])
+        w(f"Compared with the scan of {ch.get('previous_scanned_at', 'an earlier run')}" + (f" (commit {ch['previous_commit']})" if ch.get("previous_commit") else "") +
+          f": **{sum(1 for f in findings if f.get('delta') == 'new')}** current finding(s) are new, **{sum(1 for f in findings if f.get('delta') == 'existing')}** were already present, and **{len(gone)}** earlier candidate(s) are no longer detected. "
+          "*No longer detected* means the pattern no longer matches; the code may be fixed, moved, excluded or suppressed, so confirm before closing it.\n")
+        newf = [f for f in findings if f.get("delta") == "new"]
+        if newf:
+            w("**New since the previous scan**\n")
+            w(table(["ID", "Severity", "Issue", "Location"], [[f["id"], f["severity"], f["title"], loc_str(f)] for f in newf[:40]]) + (f"\n\n…and {len(newf) - 40} more." if len(newf) > 40 else ""))
+        if gone:
+            w("\n**No longer detected**\n")
+            w(table(["Previous ID", "Severity", "Issue", "File"], [[g["id"], g["severity"], g["title"], f"`{g['file']}`"] for g in gone[:40]]) + (f"\n\n…and {len(gone) - 40} more." if len(gone) > 40 else ""))
+
+    if prev:
+        w("\n### 3.5 Comparison with the Previous Review\n")
+        w(f"The previous review (scan of {prev['at'] or 'unknown date'}) confirmed **{prev['total']}** finding(s). In this review **{len(prev['carried'])}** are confirmed again"
+          + (f" and **{len(prev['dropped'])}** are not. " if prev["dropped"] else ". ")
+          + ("A finding that is not confirmed here may have been fixed, may have been judged a false positive on a second reading, or may simply not have been re-reviewed; "
+             "the *Status now* column says which. Confirm each one before closing it.\n" if prev["dropped"] else "Nothing confirmed earlier has been dropped.\n"))
+        if prev["dropped"]:
+            w(table(["Previous ID", "Severity", "Previously confirmed finding", "Location", "Status now"],
+                    [[p["id"] or "manual", p["severity"], p["title"], f"`{p['file']}:{p['line']}`", why] for p, why in sorted(prev["dropped"], key=lambda x: SEV.index(x[0]["severity"]) if x[0]["severity"] in SEV else 9)]))
 
     # ================= 4 CHECKLIST
     w("\n---\n\n## 4. Security Control Checklist by Domain\n")
@@ -437,7 +948,9 @@ def main():
             ["Location", ", ".join(f"`{l.get('file', f['file'])}:{l['line']}`" for l in (f.get("locations") or [dict(line=f['line'])])[:12])],
             ["Weakness (CWE)", f.get("cwe") or "—"], ["OWASP Top 10 (2021)", f.get("owasp") or "—"],
             ["Confidence", f.get("confidence", "—")], ["Detected by", f.get("source", "scanner") + (f" rule {f['rule']}" if f["rule"] != "MANUAL" else " (manual review)")],
-            ["Status", f.get("status", "Open")]]))
+            ["Status", f.get("status", "Open")]]
+            + ([["Since previous scan", "New" if f.get("delta") == "new" else "Already present"]] if f.get("delta") else [])
+            + ([["Independent verification", ver_label(f["verification"])]] if f.get("verification") else [])))
         desc = (f.get("description") or "").strip()
         note = (f.get("detail") or "").strip()
         if not desc:
@@ -452,6 +965,9 @@ def main():
             w("**Evidence** (secrets masked)\n")
             w("```text\n" + "\n".join(f"{l.get('file', f['file'])}:{l['line']}: {redact_line(l['snippet'])}" for l in snips[:12]) + "\n```\n")
         w(f"**Recommendation.** {f['fix']}\n")
+        if (f.get("patch") or "").strip():
+            w("**Suggested patch** (review and test before applying; not applied by this tool)\n")
+            w("```diff\n" + f["patch"].strip("\n") + "\n```\n")
         w("**Compliance mapping.** NIST 800-53: " + ", ".join(c for c, _ in nist[:6]) + ". IRS Pub 1075: " + ", ".join(c for c, _ in irs[:4]) +
           ". EOTSS: " + "; ".join(eotss_label(e) for e in eot[:3]) + ".\n")
 
@@ -504,7 +1020,8 @@ def main():
     deps = scan["dependencies"]
     w("### 7.1 Inventory\n")
     if deps["ecosystems"]:
-        w(table(["Ecosystem", "Components", "Version-pinned", "Dev-only"], [[k, v["total"], v["pinned"], v["dev"]] for k, v in sorted(deps["ecosystems"].items())]))
+        w(table(["Ecosystem", "Components", "Version-pinned", "From lockfile", "Direct", "Transitive", "Dev-only"],
+                [[k, v["total"], v["pinned"], v.get("from_lockfile", 0), v.get("direct", 0), v.get("transitive", 0), v["dev"]] for k, v in sorted(deps["ecosystems"].items())]))
     else:
         w("No dependency manifests were found.")
     w(f"\nA CycloneDX 1.5 SBOM with {deps['total']} components was generated: `{deps['sbom']}` (deliver alongside this report).\n")
@@ -514,7 +1031,18 @@ def main():
     if meta.get("dependency_notes_md"):
         w("\n### 7.3 Additional Dependency and Image Notes\n")
         w(meta["dependency_notes_md"].strip() + "\n")
-    w("\n*Coverage note:* CVE matching used a curated offline list; run a connected OSV/NVD scan before release and import results to complete this section.")
+    dbi = deps.get("advisory_db") or {}
+    if dbi.get("available"):
+        age = dbi.get("age_days")
+        stale = age is not None and age > 90
+        w(f"\n*Coverage note:* vulnerability matching used the bundled OSV advisory snapshot dated **{dbi.get('generated', 'unknown')}**"
+          + (f" ({age} days old{'; **older than 90 days, refresh before relying on this section**' if stale else ''})" if age is not None else "")
+          + f", {dbi.get('advisories', 0):,} package advisories, exact-version matching only"
+          + ("; results from a connected scan (`--osv-results`) were merged" if deps.get("imported_osv") else "; no connected scan was imported")
+          + (f". {deps['unresolved']} declared dependenc{'y' if deps['unresolved'] == 1 else 'ies'} had no exact version and were not matched." if deps.get("unresolved") else ".")
+          + " Run a connected OSV/NVD scan before release to cover advisories published after the snapshot.")
+    else:
+        w("\n*Coverage note:* **the advisory snapshot was unavailable, so CVE matching fell back to a small curated list and coverage is PARTIAL.** Run a connected OSV/NVD scan and import it with `--osv-results`.")
 
     # ================= 8 ROADMAP
     w("\n---\n\n## 8. Remediation Roadmap\n")
@@ -536,19 +1064,55 @@ def main():
     # ================= APPENDICES
     w("\n---\n\n## Appendix A. Scan Coverage and Tooling\n")
     h = scan["history"]
-    w(table(["Item", "Detail"], [
+    run = scan["meta"].get("run") or {}
+    opts = run.get("options") or {}
+    dbi_ = (scan.get("dependencies") or {}).get("advisory_db") or {}
+    rows_a = [
         ["Scanner", f"{scan['meta']['tool']} {scan['meta']['version']} (offline; no network calls)"],
-        ["Scan time", scan["meta"]["scanned_at"]], ["Files analysed", f"{inv['files_scanned']:,}"],
+        ["Scanner build fingerprint", f"`{run['scanner_sha256'][:16]}` (SHA-256 of scripts and reference data; identical value = identical rules)" if run.get("scanner_sha256") else "not recorded"],
+        ["Repository revision" if not meta.get("repositories") else "Repository revisions", repository_revisions(meta, git)],
+        ["Scan time", f"{scan['meta']['scanned_at']} ({scan['meta'].get('duration_s', '?')}s" + (f", {run['jobs']} worker processes" if run.get("jobs", 1) > 1 else "") + ")"],
+        ["Files analysed", f"{inv['files_scanned']:,} ({inv['lines']:,} lines) in {len(comps)} component(s)"],
+        ["Excluded paths", ", ".join(f"`{x}`" for x in opts.get("excludes", [])) or "none"],
         ["Git history", f"{h['commits_scanned']} commits scanned, {h['hits']} secret hit(s)" if h.get("ran") else h.get("note", "not scanned")],
-        ["Detection rules", f"{len(R.RULES)} line rules, {len(R.PRESENCE)} control-presence checks"],
-        ["Imported results", f"{scan.get('sarif_imported', 0)} SARIF result(s)"],
-        ["Candidates raised / confirmed / rejected / unconfirmed", f"{len(scan['findings'])} / {len(confirmed) - n_manual} / {len(rejected)} / {len(unconfirmed)}"],
-        ["Manually added findings", str(n_manual)]]))
+        ["Detection rules", f"{len(R.RULES)} line rules, {len(R.PRESENCE)} control-presence checks; intra-file data-flow tracking ({inv.get('flow_candidates', 0)} flow candidate(s))"],
+        ["Advisory snapshot", (f"{dbi_.get('generated', '?')} ({dbi_.get('advisories', 0):,} advisories; SHA-256 `{run.get('advisory_db_sha256', '')[:16]}`)" if dbi_.get("available") else "unavailable")],
+        ["Imported results", f"{scan.get('sarif_imported', 0)} SARIF result(s)" + ("; OSV scan merged" if (scan.get("dependencies") or {}).get("imported_osv") else "")],
+        ["Suppression policy", f"{scan.get('suppression', {}).get('applied', 0)} applied, {scan.get('suppression', {}).get('expired', 0)} expired" if scan.get("suppression", {}).get("files") else "none"],
+        ["Candidates raised / confirmed / rejected / accepted risk / unconfirmed", f"{len(scan['findings'])} / {len(confirmed) - n_manual} / {len(rejected)} / {len(accepted)} / {len(unconfirmed)}"],
+        ["Candidates dispositioned individually / by bulk rule / by suppression policy", f"{via_counts['explicit']} / {via_counts['bulk']} / {via_counts['suppression']}"],
+        ["Manually added findings", str(n_manual)]]
+    if prev:
+        rows_a.append(["Compared with previous review", f"{prev['total']} previously confirmed: {len(prev['carried'])} confirmed again, {len(prev['dropped'])} not (Section 3.5)"])
+    w(table(["Item", "Detail"], rows_a))
+    if comps:
+        w("\n### A.2 Coverage by Component\n")
+        w("Components are the top-level folders (or `packages/*`, `services/*`, `apps/*` style folders in a monorepo), ordered by review priority: Critical and High candidates first. "
+          "*Review status* is what the assessor recorded after reading the code; automated detection covered every scanned file regardless.\n")
+        shown = [c for c in comps if c["critical"] or c["high"] or c["medium"]][:40] or comps[:40]
+        w(table(["Component", "Files", "Lines", "Candidates", "Critical", "High", "Medium", "Low/Info", "Manual review"],
+                [[f"`{c['component']}`", f"{c['files']:,}", f"{c['lines']:,}", c["candidates"], c["critical"], c["high"], c["medium"], c["low"],
+                  rc_status(c["component"])[0] + (f": {rc_status(c['component'])[1]}" if rc_status(c["component"])[1] else "")] for c in shown]))
+        rest = len(comps) - len(shown)
+        if rest > 0:
+            w(f"\n…and {rest} more component(s) with no Critical, High or Medium candidates (full list in `scan.json`).")
     w("\n## Appendix B. Rejected and Consolidated Candidates\n")
     if rejected:
         n_c = sum(1 for _f, _r, d_ in rejected if d_ == "consolidated")
         w(f"{len(rejected)} candidate(s) were not carried into Section 5: {len(rejected) - n_c} incorrect or inapplicable pattern match(es) and {n_c} valid observation(s) consolidated into another finding. "
           "A consolidation is not a claim that the weakness is absent.\n")
+    notes_b = []
+    if ch_bulk:
+        notes_b.append(f"{len(ch_bulk)} of {len(ch_log)} Critical/High candidates were dispositioned by bulk rules, not individually "
+                       f"({ch_bulk_kinds['needs_review']} left unconfirmed, {ch_bulk_kinds['consolidated']} consolidated, {ch_bulk_kinds['false_positive']} rejected as false positives); "
+                       "each bulk rule carries one shared reason, so spot-check them before relying on these rejections")
+    if consolidated_into_unconfirmed:
+        notes_b.append(f"{len(consolidated_into_unconfirmed)} candidates were consolidated into findings that are themselves unconfirmed; a consolidation groups leads, it does not confirm them")
+    if notes_b:
+        w("\n**Review note.** " + ". ".join(notes_b) + ".\n")
+    if shared_reasons:
+        w("\n**Review note.** " + "; ".join(f"{n_} candidates share the identical recorded reason \"{k[:80]}…\"" for _f, n_, k in shared_reasons) +
+          ". Identical wording is acceptable for a deliberate bulk rule, but confirm each candidate was read individually before relying on these rejections.\n")
     w(table(["ID", "Rule", "Location", "Reason"], [[f["id"], f["rule"], f"`{f['file']}:{f['line']}`", r_] for f, r_, _d in rejected]) if rejected else "None.")
 
     text = "\n".join(L) + "\n"
@@ -570,7 +1134,19 @@ def main():
     for wmsg in warnings:
         print("warning: " + wmsg, file=sys.stderr)
     print(f"Report written: {path}")
-    print(f"Overall risk: {rating}; confirmed {len(confirmed)}, unconfirmed {len(unconfirmed)}, rejected {len(rejected)}")
+    print(f"Overall risk: {rating}; confirmed {len(confirmed)}, unconfirmed {len(unconfirmed)}, rejected {len(rejected)}, accepted risk {len(accepted)}")
+    if a.emit_sarif:
+        sp = os.path.join(out_dir, f"security-audit_{stamp}.sarif")
+        with open(sp, "w", encoding="utf-8") as fh:
+            json.dump(build_sarif(scan, findings, rejected, accepted), fh, indent=1)
+        print(f"SARIF written: {sp}")
+    if a.fail_on:
+        limit = SEV.index(a.fail_on)
+        bad = [f for f in (confirmed + (unconfirmed if a.fail_on_unconfirmed else [])) if SEV.index(f["severity"]) <= limit]
+        if bad:
+            print(f"CI gate FAILED: {len(bad)} finding(s) at or above {a.fail_on}: " + ", ".join(f["id"] for f in bad[:12]) + ("..." if len(bad) > 12 else ""), file=sys.stderr)
+            sys.exit(10)
+        print(f"CI gate passed: no confirmed finding at or above {a.fail_on}.")
 
 
 if __name__ == "__main__":

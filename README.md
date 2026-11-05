@@ -24,7 +24,7 @@ The skills in this repository are reusable building blocks for that kind of work
 | Skill | What it does |
 |---|---|
 | [`repo-readme-generator`](#repo-readme-generator) | Creates or updates a repo's README, or a full documentation suite with `AGENTS.md` and diagrams, from verified evidence. |
-| [`appsec-static-audit`](#appsec-static-audit) | Source-code-only security audit (OWASP, SSO, secrets, IaC, SBOM, PII/FTI) with a timestamped enterprise report mapped to NIST 800-53, IRS Pub 1075 and EOTSS. |
+| [`appsec-static-audit`](#appsec-static-audit) | Source-code-only security audit of one repository or several (OWASP, SSO, secrets, dependencies and SBOM, IaC, CI/CD, PII/FTI) with a timestamped enterprise report, SARIF output and a CI gate, mapped to NIST 800-53, IRS Pub 1075 and EOTSS. |
 | [`wave-a11y-scan`](#wave-a11y-scan) | WAVE-style accessibility scan of web pages with a client-ready report (WCAG 2.x, Section 508 note). |
 
 In Codex, install a skill with the command in its section, then restart Codex. Skills are installed as folders under `~/.codex/skills/` (or `$CODEX_HOME/skills/` if you set `CODEX_HOME`).
@@ -81,7 +81,7 @@ rm -rf ~/.codex/skills/repo-readme-generator
 
 ## appsec-static-audit
 
-Source-code-only security audit (OWASP, SSO, secrets, IaC, SBOM, PII/FTI) with a timestamped enterprise report mapped to NIST 800-53, IRS Pub 1075 and EOTSS. It needs only Python 3 and git; it makes no network calls and writes `security-audit/security-audit-report_<timestamp>.md` plus an SBOM. Details: [`SKILL.md`](skills/appsec-static-audit/SKILL.md).
+Source-code-only security audit of one repository or several, for any organization or stack. A scanner finds candidates (injection and other OWASP issues with data-flow tracking, access control, SSO/JWT/SAML, sessions, secrets including git history, dependency vulnerabilities from a bundled OSV snapshot, SBOM, cryptography, PII/FTI handling, IaC, Docker/Kubernetes, GitHub Actions); the agent then reads the code, confirms or rejects each candidate and writes a timestamped Markdown report with tables, severity, file and line evidence, concrete fixes and mappings to NIST 800-53, IRS Pub 1075 and EOTSS. It needs only Python 3 and git, makes no network calls, never modifies the audited repositories, and writes `security-audit/security-audit-report_<timestamp>.md` plus `sbom.cdx.json`, `scan.json` and `triage.json` (and optionally a SARIF file). Details: [`SKILL.md`](skills/appsec-static-audit/SKILL.md).
 
 ### Install
 
@@ -96,6 +96,35 @@ Open Codex in the folder you want to work on and run:
 ```
 $appsec-static-audit audit this repository for security
 ```
+
+### Sample prompts
+
+Run these in Codex from the folder you want to audit (replace the paths and names with your own).
+
+```
+$appsec-static-audit audit this repository for security
+```
+
+Several repositories as one report:
+
+```
+$appsec-static-audit audit ../platform ../shared-libs ../installer as one workspace called "Acme Platform", exclude **/node_modules and **/target
+```
+
+Re-auditing the same code and proving nothing was lost:
+
+```
+$appsec-static-audit re-audit this repository into ./security-audit-new and compare with the previous review in ./security-audit-old: list every finding confirmed before and not confirmed now, and why.
+```
+
+### What you get
+
+- **Report** (`security-audit-report_<timestamp>.md`): executive summary, scope and limitations, findings register, a control checklist per domain (No., Issue, Status, Evidence), detailed findings with exploit scenario, impact, evidence and fix, compliance mapping, dependencies and SBOM, remediation roadmap, and appendices for scan coverage (scanner fingerprint, repository revisions, per-component coverage and review status) and rejected candidates.
+- **Stable IDs**: a finding keeps its `FND-nnn` number across re-scans, so an existing `triage.json` stays valid.
+- **Honest status**: controls nobody reviewed show as `NOT ASSESSED`, never as a pass. Low-confidence candidates are capped at Medium until confirmed. The report states how many candidates were decided one by one versus by bulk rule.
+- **Verification**: confirmed Critical and High findings can be re-checked blind by a second reader; the report records who agreed, who disputed and whether the verdict is tied to the exact packet reviewed.
+- **Re-audits**: `--previous-triage` lists every earlier confirmed finding that this review does not confirm, with its status now.
+- **Pipelines**: `--emit-sarif` for code-scanning tools, `--fail-on High` for CI gates, and a suppression policy file for accepted risks and known false positives.
 
 ### Update
 

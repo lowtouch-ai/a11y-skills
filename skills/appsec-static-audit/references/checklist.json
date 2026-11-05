@@ -11,7 +11,8 @@
           "signals": [
             "INJ-SQL-1",
             "INJ-SQL-2",
-            "INJ-SQL-3"
+            "INJ-SQL-3",
+            "INJ-SQL-4"
           ],
           "review": "Trace every request parameter to each DB call, including ORM raw()/native queries and stored procedures."
         },
@@ -31,7 +32,8 @@
             "INJ-CMD-2",
             "INJ-CMD-3",
             "INJ-CMD-4",
-            "INJ-EVAL-1"
+            "INJ-EVAL-1",
+            "INJ-CMD-6"
           ],
           "review": "Inspect shell-outs, template engines, report generators, file converters."
         },
@@ -41,7 +43,8 @@
           "signals": [
             "XSS-1",
             "XSS-2",
-            "XSS-3"
+            "XSS-3",
+            "XSS-4"
           ],
           "review": "Check templates, client-side rendering, rich-text/markdown renderers, CSP presence."
         },
@@ -49,7 +52,8 @@
           "key": "OWASP-05",
           "issue": "Server-side requests to user-supplied URLs are allowlisted (SSRF)",
           "signals": [
-            "SSRF-1"
+            "SSRF-1",
+            "SSRF-2"
           ],
           "review": "Look at webhooks, URL importers, image fetchers, PDF renderers, metadata endpoint exposure."
         },
@@ -59,7 +63,8 @@
           "signals": [
             "DESER-1",
             "XXE-1",
-            "DESER-2"
+            "DESER-2",
+            "DESER-3"
           ],
           "review": "Check session stores, message queues, caches, SAML/XML parsing."
         },
@@ -67,7 +72,8 @@
           "key": "OWASP-07",
           "issue": "File paths are canonicalized and confined to an allowed base directory",
           "signals": [
-            "PATH-1"
+            "PATH-1",
+            "PATH-2"
           ],
           "review": "Check download/export/attachment/template-include handlers."
         },
@@ -389,8 +395,10 @@
         },
         {
           "key": "DEP-04",
-          "issue": "SBOM (CycloneDX) generated for the release",
-          "signals": [],
+          "issue": "Dependency sources are trusted: no typosquatted names, remote-fetching install or startup scripts (curl | sh, source <(curl ...)), plain-HTTP registries or dependency-confusion indexes",
+          "signals": [
+            "SH-1"
+          ],
           "review": "SBOM produced by this audit; confirm it is produced in CI per release."
         }
       ]
@@ -608,7 +616,8 @@
           "issue": "Encryption in transit enforced; HTTP redirected to HTTPS",
           "signals": [
             "IAC-7",
-            "CRY-7"
+            "CRY-7",
+            "K8S-5"
           ],
           "review": "Check load balancer, CDN and DB TLS settings."
         },
@@ -619,7 +628,9 @@
             "K8S-1",
             "K8S-2",
             "DKR-1",
-            "DKR-3"
+            "DKR-3",
+            "K8S-3",
+            "K8S-4"
           ],
           "review": "Review Dockerfiles and manifests; PodSecurity level."
         },
@@ -655,6 +666,18 @@
             "IAC-6"
           ],
           "review": "Check CloudTrail/Activity Log/flow logs/bucket logging."
+        },
+        {
+          "key": "IAC-11",
+          "issue": "CI/CD pipelines are hardened: no script injection, pinned third-party actions, least-privilege tokens, no secrets in logs",
+          "signals": [
+            "CI-1",
+            "CI-2",
+            "CI-3",
+            "CI-4",
+            "CI-5"
+          ],
+          "review": "Read every workflow under .github/workflows: triggers (pull_request_target, workflow_run), run steps that expand event data, uses: pins, permissions blocks and any step that handles secrets."
         }
       ]
     },

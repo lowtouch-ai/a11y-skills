@@ -25,7 +25,7 @@ def R(id, domain, sev, cwe, title, pattern, langs, fix, flags=0, conf="Medium", 
 
 def P(id, domain, sev, cwe, title, langs, when, expect, fix, scope="repo", owasp="", conf="Low", aggregate=False):
     PRESENCE.append(dict(id=id, domain=domain, severity=sev, cwe=cwe, title=title, langs=set(langs.split()),
-                         when=re.compile(when, I), expect=re.compile(expect, I), fix=fix, scope=scope,
+                         when=re.compile(when, I | re.M), expect=re.compile(expect, I | re.M), fix=fix, scope=scope,
                          owasp=owasp, confidence=conf, aggregate=aggregate))
 
 
@@ -41,7 +41,7 @@ R("INJ-SQL-3", "owasp", "High", "CWE-89", "SQL concatenated with request data (P
   r"(mysqli?_query|->query|->exec)\s*\(.*\$_(GET|POST|REQUEST|COOKIE)", "php",
   "Use PDO prepared statements with bound parameters.", owasp="A03")
 R("INJ-NOSQL-1", "owasp", "High", "CWE-943", "NoSQL query built from request input or $where",
-  r"\$where\s*:|\.(find|findOne|update|deleteMany|aggregate)\w*\(\s*(req|request)\.(body|query|params)\b", "js py java",
+  r"\$where\s*:|\.(find|findOne|updateOne|updateMany|deleteOne|deleteMany|aggregate|countDocuments|findOneAndUpdate|findOneAndDelete)\(\s*(req|request)\.(body|query|params)\b", "js py java",
   "Validate input types, cast to expected primitives, reject operator keys ($ne, $gt, $where), use a schema validator.", owasp="A03")
 R("INJ-CMD-1", "owasp", "Critical", "CWE-78", "OS command execution with shell (Python)",
   r"os\.(system|popen)\(|subprocess\.\w+\([^)]*shell\s*=\s*True", "py",
@@ -73,6 +73,23 @@ R("SSRF-1", "owasp", "High", "CWE-918", "Outbound request to a URL taken directl
 R("DESER-1", "owasp", "Critical", "CWE-502", "Insecure deserialization",
   r"pickle\.loads?\(|cPickle\.|marshal\.loads|jsonpickle\.decode|yaml\.unsafe_load|shelve\.open|ObjectInputStream|\.readObject\(\)|XMLDecoder|BinaryFormatter|NetDataContractSerializer|unserialize\(|node-serialize|Marshal\.load|TypeNameHandling\.(All|Auto|Objects)|enableDefaultTyping", "py java cs php js rb",
   "Use data-only formats (JSON) with schema validation; never deserialize untrusted native objects.", owasp="A08")
+R("INJ-SQL-4", "owasp", "High", "CWE-89", "SQL built with string formatting (Go / Ruby / C#)",
+  r"\b(Query|QueryRow|Exec|QueryContext|QueryRowContext|ExecContext|Raw|Select|Get)\w*\(\s*(ctx\s*,\s*)?fmt\.Sprintf\(|\b(where|find_by_sql|execute|exec_query|order|pluck|joins|having|group)\(\s*\"[^\"]*#\{|new\s+SqlCommand\(\s*(\$\"|\"[^\"]*\"\s*\+)|\b(FromSqlRaw|ExecuteSqlRaw|SqlQuery|ExecuteSqlCommand)\(\s*(\$\"|\"[^\"]*\"\s*\+)", "go rb cs",
+  "Use bound parameters (database/sql placeholders, ActiveRecord ? / named binds, SqlParameter, FromSqlInterpolated) instead of formatting values into SQL.", owasp="A03")
+R("INJ-CMD-6", "owasp", "Critical", "CWE-78", "OS command built from request data (Go / Ruby)",
+  r"exec\.Command(Context)?\([^)]*\b(r\.(FormValue|PostFormValue|URL\.Query\(\))|c\.(Query|Param|PostForm|DefaultQuery)|ctx\.(Query|Param))|\b(system|exec|spawn|popen|Open3\.\w+)\(\s*\"[^\"]*#\{\s*params|`[^`]*#\{\s*params", "go rb",
+  "Pass arguments as a list with no shell, validate each against an allowlist.", owasp="A03")
+R("SSRF-2", "owasp", "High", "CWE-918", "Outbound request to a URL taken from request data (Go / PHP / Ruby / C#)",
+  r"http\.(Get|Post|Head|NewRequest)\([^)]*\b(r\.(FormValue|URL\.Query\(\))|c\.(Query|Param|PostForm)|ctx\.(Query|Param))|file_get_contents\(\s*\$_(GET|POST|REQUEST)|CURLOPT_URL[^;]*\$_(GET|POST|REQUEST)|Net::HTTP\.(get|post|start)\w*\([^)]*params|URI\.open\(\s*params|HttpClient[^;\n]*\.(Get|Post)\w*Async\(\s*(Request\.Query|\w*Query\[)", "go php rb cs",
+  "Validate against an allowlist of hosts/schemes; block private and link-local ranges (169.254.169.254); disable redirects.", owasp="A10")
+R("PATH-2", "owasp", "High", "CWE-22", "File path built from request data (Go / Ruby)",
+  r"os\.(Open|ReadFile|Create|Remove|OpenFile)\([^)]*\b(r\.(FormValue|URL\.Query\(\))|c\.(Query|Param)|ctx\.(Query|Param))|filepath\.Join\([^)]*\b(r\.(FormValue|URL\.Query\(\))|c\.(Query|Param)|ctx\.(Query|Param))|File\.(read|open|write|delete)\(\s*params|send_file\s*\(?\s*params|c\.File\(\s*c\.(Query|Param)", "go rb",
+  "Canonicalize and verify the resolved path stays inside an allowed base directory; map IDs to files instead of using raw names.", owasp="A01")
+R("DESER-3", "owasp", "High", "CWE-502", "Unsafe YAML / object loading (Ruby, PHP, Java)",
+  r"\bYAML\.load\((?![^)]*safe)|\bOj\.load\(|YamlReader|new\s+Yaml\(\s*\)\.load\(|\.unsafe_load\(", "rb java",
+  "Use YAML.safe_load / SafeConstructor and permitted_classes; never load native objects from untrusted input.", owasp="A08")
+R("XSS-4", "owasp", "High", "CWE-79", "Request data reflected into an HTML response (Node)",
+  r"^$", "js", "Escape output for its context or render through an auto-escaping template engine; never concatenate request data into HTML.", owasp="A03", conf="Medium")  # handled by flow.py
 R("DESER-2", "owasp", "Medium", "CWE-502", "yaml.load without SafeLoader",
   r"yaml\.load\((?![^)]*Safe)", "py",
   "Use yaml.safe_load (FullLoader/default loaders can still construct objects). Severity rises to High if the input can be attacker-controlled.", owasp="A08")
@@ -203,7 +220,7 @@ SECRET_PATTERNS = [
     ("Stripe live key", r"\b[sr]k_live_[0-9a-zA-Z]{20,}\b", "Critical"),
     ("Azure storage key", r"AccountKey=[A-Za-z0-9+/=]{40,}", "Critical"),
     ("Hardcoded JWT", r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", "High"),
-    ("Credentials in connection string / URL", r"\b[a-z][a-z0-9+.-]{2,15}://[^/\s:@\"']{2,}:(?![*x]{3,}|\$\{|%\(|<|\{\{)[^/\s:@\"']{3,}@[^\s\"']+", "High"),
+    ("Credentials in connection string / URL", r"\b[a-z][a-z0-9+.-]{2,15}://[^/\s:@\"']{2,}:(?![*xX]{3,}|\$|%\(|%s|<|\{|\[|\*|#\{)[^/\s:@\"']{3,}@[^\s\"']+", "High"),
 ]
 SECRET_PATTERNS = [(n, re.compile(rx), sev) for n, rx, sev in SECRET_PATTERNS]
 GENERIC_SECRET = re.compile(
@@ -277,10 +294,6 @@ R("API-1", "api", "High", "CWE-915", "Mass assignment: request body bound direct
 R("API-2", "api", "Medium", "CWE-209", "GraphQL introspection / playground enabled",
   r"introspection\s*[:=]\s*(true|True)|playground\s*[:=]\s*(true|True)|graphiql\s*[:=]\s*(true|True)|GRAPHIQL\s*=\s*True", "js py java cs yaml conf",
   "Disable introspection and IDEs in production; enforce depth/cost limits.", conf="Medium", owasp="A05")
-P("API-3", "api", "High", "CWE-306", "Route handlers with no authentication evidenced in the same file", "py js java cs php rb go",
-  r"@(app|router|bp|blueprint|\w+_router|\w+_bp)\.(route|get|post|put|delete|patch)\(|(?<![\w.])(app|router)\.(get|post|put|delete|patch)\(|@(Get|Post|Put|Delete|Patch|Request)Mapping|\[Http(Get|Post|Put|Delete)|Route::(get|post|put|delete)|(?-i:(?<![\w.])r\.(GET|POST|PUT|DELETE)\()|(?<![\w.])path\(\s*[\"']",
-  r"authenticate|login_required|@PreAuthorize|@Secured|\[Authorize|passport|jwt|requires_auth|Depends\(|permission_classes|IsAuthenticated|authMiddleware|verifyToken|isAuthenticated|auth_required|RolesAllowed|hasRole|current_user|ensureLoggedIn|requireAuth|before_action\s*:authenticate|middleware\(\s*[\"']auth|authorize|bearer|api_key|session\[",
-  "Apply authentication by default (global middleware/filter) and explicitly mark public routes.", scope="file", owasp="A01", conf="Low", aggregate=True)
 P("API-4", "api", "Medium", "CWE-770", "Rate limiting / throttling not evidenced", "py js java cs php rb go",
   r"express\(\)|Flask\(|FastAPI\(|@RestController|@Controller|\[ApiController\]|urlpatterns|Rails\.application|gin\.Default|mux\.NewRouter|Route::", r"rate.?limit|throttle|Limiter|slowapi|bucket4j|express-rate-limit|RateLimit|ratelimit|rack-attack|AspNetCoreRateLimit|Resilience4j|tollbooth|limiter",
   "Add per-IP and per-account throttling on login, MFA, password-reset and search/export endpoints (and at the WAF/gateway).", owasp="A04")
@@ -322,11 +335,45 @@ R("DKR-1", "iac", "Medium", "CWE-250", "Dockerfile: unpinned base image, remote 
 R("DKR-2", "secrets", "High", "CWE-798", "Secret baked into Dockerfile ENV/ARG",
   r"^\s*(ENV|ARG)\s+\w*(PASSWORD|SECRET|TOKEN|API_?KEY|PRIVATE_?KEY)\w*[= ]\s*[^\s$][^\s]*", "docker",
   "Inject secrets at runtime (secrets manager, BuildKit --mount=type=secret); never bake into image layers.", flags=re.M | I, redact=True, owasp="A02")
+P("K8S-3", "iac", "Low", "CWE-770", "Kubernetes workload has no resource limits", "yaml",
+  r"^\s*kind:\s*(Deployment|StatefulSet|DaemonSet|ReplicaSet|Job|CronJob|Pod)\b", r"^\s*limits:",
+  "Set CPU and memory requests and limits on every container so a compromised or runaway pod cannot starve the node.", scope="file", conf="Medium", aggregate=True)
+P("K8S-4", "iac", "Medium", "CWE-250", "Kubernetes workload has no securityContext (non-root, read-only filesystem, dropped capabilities)", "yaml",
+  r"^\s*kind:\s*(Deployment|StatefulSet|DaemonSet|ReplicaSet|Job|CronJob|Pod)\b", r"^\s*securityContext:",
+  "Add a pod and container securityContext: runAsNonRoot, readOnlyRootFilesystem, allowPrivilegeEscalation=false, capabilities drop ALL, seccompProfile RuntimeDefault.", scope="file", conf="Medium", aggregate=True, owasp="A05")
+P("K8S-5", "iac", "Medium", "CWE-319", "Kubernetes Ingress has no TLS configuration", "yaml",
+  r"^\s*kind:\s*Ingress\b", r"^\s*tls:",
+  "Terminate TLS at the Ingress (spec.tls with a managed certificate) and redirect HTTP to HTTPS.", scope="file", conf="Medium", aggregate=True, owasp="A02")
 P("DKR-3", "iac", "Medium", "CWE-250", "Dockerfile has no non-root USER", "docker",
   r"^\s*FROM\s", r"^\s*USER\s+(?!root\b|0\b)\S+", "Add a non-root USER before ENTRYPOINT/CMD.", scope="file", conf="Medium", aggregate=True)
 R("DKR-4", "iac", "High", "CWE-668", "docker-compose: privileged, host network, docker.sock, or data port published to all interfaces",
-  r"privileged:\s*true|network_mode:\s*[\"']?host|/var/run/docker\.sock|[\"']?(0\.0\.0\.0:)?(5432|3306|27017|6379|9200|1433|5984|11211):(5432|3306|27017|6379|9200|1433|5984|11211)[\"']?", "docker",
+  r"privileged:\s*true|network_mode:\s*[\"']?host|/var/run/docker\.sock|(?<![\w.:\]])[\"']?(0\.0\.0\.0:)?(5432|3306|27017|6379|9200|1433|5984|11211):(5432|3306|27017|6379|9200|1433|5984|11211)[\"']?", "docker",
   "Bind data ports to 127.0.0.1 or an internal network; avoid privileged mode and the Docker socket.")
+R("CI-1", "iac", "High", "CWE-94", "CI workflow interpolates untrusted event data into a script (command injection)",
+  r"\$\{\{\s*github\.(event\.(issue|pull_request|comment|review|review_comment|discussion|head_commit|commits|pages|workflow_run)[\w.\[\]*]*\.(title|body|name|label|ref|message|email|login|head_ref)|head_ref)\s*\}\}", "yaml",
+  "Pass the value through an environment variable (env: TITLE: ${{ ... }}) and reference \"$TITLE\" in the script; never expand event fields inside `run:`. This is a candidate: confirm the line is inside a run script, not an `if:` or `with:`.",
+  only_files=r"(^|/)\.github/(workflows|actions)/", conf="Low", owasp="A03",
+  skip=r"^\s*(?!run\b)[A-Za-z_][\w-]*:\s*\$\{\{")      # `env: TITLE: ${{ ... }}`, `with:` inputs and `if:` conditions are the safe pattern
+R("CI-2", "iac", "High", "CWE-829", "CI workflow uses pull_request_target (runs with secrets in the context of untrusted PRs)",
+  r"\bpull_request_target\b|\bworkflow_run\b\s*:", "yaml",
+  "Do not check out or execute code from the pull request in a pull_request_target job; split into an unprivileged pull_request job plus a privileged job that only consumes vetted artifacts.",
+  only_files=r"(^|/)\.github/workflows/", conf="Low", owasp="A08")
+R("CI-3", "iac", "Medium", "CWE-829", "Third-party GitHub Action not pinned to a commit SHA",
+  r"^\s*-?\s*uses:\s*(?!\./|actions/|github/|docker://)[\w.-]+/[\w./-]+@(?![0-9a-f]{40}\b)\S+", "yaml",
+  "Pin third-party actions to a full commit SHA (with a comment naming the version) and let Dependabot/Renovate update them; tags and branches can be moved by the action's owner.",
+  only_files=r"(^|/)\.github/(workflows|actions)/", flags=re.M, conf="Medium", owasp="A08")
+R("CI-4", "iac", "Medium", "CWE-250", "CI workflow grants write-all or broad token permissions",
+  r"^\s*permissions:\s*write-all\b|^\s*(contents|packages|id-token|actions|security-events|pull-requests):\s*write\b", "yaml",
+  "Declare `permissions: contents: read` at the workflow level and grant `write` only to the job and scope that needs it.",
+  only_files=r"(^|/)\.github/(workflows|actions)/", flags=re.M, conf="Low", owasp="A05")
+R("CI-5", "secrets", "High", "CWE-532", "CI step prints a secret to the build log",
+  r"\b(echo|printf|cat)\b[^\n]*\$\{\{\s*secrets\.|\bset\s+-x\b[^\n]*\$\{\{\s*secrets\.|--password[= ]\$\{\{\s*secrets\.", "yaml",
+  "Pass secrets through env: and never echo them; use the platform's masking (::add-mask::) and avoid `set -x` in steps that handle secrets.",
+  only_files=r"(^|/)\.github/(workflows|actions)/", conf="Medium", owasp="A09")
+R("SH-1", "deps", "High", "CWE-494", "Shell script downloads remote content and executes it (curl | sh, source <(curl ...), eval $(curl ...))",
+  r"\b(curl|wget)\b[^\n|;]*\|\s*(sudo\s+)?(ba|z|da)?sh\b|(\bsource|(?<![\w.])\.)\s+<\(\s*(curl|wget)\b|\b(ba|z|da)?sh\s+<\(\s*(curl|wget)\b|\beval\s+[\"']?\$\(\s*(curl|wget)\b|\b(ba|z)?sh\s+-c\s+[\"']\$\(\s*(curl|wget)\b", "sh yaml",
+  "Do not execute what a network fetch returns. Ship the script with the release, or download it to a file, verify a pinned checksum/signature, then run it; use https with certificate verification and never rewrite https to http. Secrets should come from an authenticated secret store client, not from `source <(curl ...)`.",
+  conf="Medium", owasp="A08")
 R("CFG-1", "iac", "Medium", "CWE-489", "Debug / development mode enabled in configuration",
   r"\bDEBUG[\"']?\]?\s*=\s*(True|true|1)\b|app\.run\([^)]*debug\s*=\s*True|APP_DEBUG\s*=\s*(true|1)|debug\s*:\s*true|FLASK_DEBUG\s*=\s*(1|true)|NODE_ENV\W+development|spring\.devtools|management\.endpoints\.web\.exposure\.include\s*=\s*\*|spring\.h2\.console\.enabled\s*=\s*true|<compilation[^>]*debug=\"true\"|XDEBUG|APP_ENV\s*=\s*(local|dev)", "py js java cs php conf yaml env rb",
   "Disable debug/dev tooling and actuator/console endpoints in production builds.", flags=I, owasp="A05")
@@ -373,9 +420,15 @@ _REFERENCE = re.compile(r"(?i)^(vault|secret|ssm|kms|env|file|aws-secret|gcp-sec
 _IDENT = re.compile(r"^[A-Za-z_][\w]*(\.[A-Za-z_]\w*)+(\(.*\))?$")
 
 
+_ENUM_VALUES = {"include", "omit", "same-origin", "none", "required", "optional", "default", "auto", "always", "never", "basic", "bearer", "digest",
+                "enabled", "disabled", "inherit", "strict", "lax", "true", "false", "null", "token", "oauth", "oauth2", "jwt", "apikey", "password", "secret"}
+
+
 def looks_secret(val, key=""):
     """Heuristic: does a quoted/unquoted literal look like a credential value rather than a name, path or expression?"""
     v = val.strip()
+    if v.lower() in _ENUM_VALUES:
+        return False
     if _PATHLIKE.search(v) or _ENVNAME.match(v) or _SNAKE.match(v) or _IDENT.match(v) or _KEBAB.match(v) or _REFERENCE.match(v):
         return False
     if re.search(r"[(){}$`]|^\w+\[|^[a-z_]+\.\w+|\bor\b|\bnot\b|^[A-Z]\w+\(", v):
