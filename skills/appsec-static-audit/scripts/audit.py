@@ -231,7 +231,7 @@ class Collector:
 
 META_BY_ID = {r["id"]: r for r in R.RULES}
 FW_RX = {k: re.compile(v, re.M | re.I) for k, v in FRAMEWORKS.items()}
-MANIFEST_RX = re.compile(r"(package\.json|requirements[\w.\-]*\.txt|pom\.xml|go\.mod|.*\.csproj|packages\.config|.*\.gradle(\.kts)?|Pipfile|composer\.json|pyproject\.toml|Cargo\.toml|Gemfile|\.npmrc|\.yarnrc(\.yml)?|pip\.(conf|ini))")
+MANIFEST_RX = re.compile(r"(package\.json|pom\.xml|go\.mod|.*\.csproj|packages\.config|.*\.gradle(\.kts)?|Pipfile|composer\.json|pyproject\.toml|Cargo\.toml|Gemfile|\.npmrc|\.yarnrc(\.yml)?|pip\.(conf|ini))")
 MONOREPO_DIRS = {"packages", "services", "apps", "libs", "modules", "projects", "src", "components", "cmd", "internal", "plugins"}
 
 
@@ -275,7 +275,7 @@ def scan_file(task):
     tags = tags_for(rel)
     res["tags"] = sorted(tags)
     res["loc"] = text.count("\n") + 1
-    if MANIFEST_RX.fullmatch(base):
+    if MANIFEST_RX.fullmatch(base) or depmod.is_requirements_file(rel):
         res["manifest"] = True
     if tags & {"tf"} or "docker" in tags or (("yaml" in tags) and re.search(r"AWSTemplateFormatVersion|apiVersion:\s*\S+\s*\n\s*kind:", text)):
         res["iac"] = True
@@ -583,7 +583,7 @@ def routes_to_findings(routes, col):
                          fix="Apply authentication by default (global middleware/dependency/filter) and explicitly mark public routes; verify authorization on every object these routes return.",
                          confidence="Medium",
                          detail=f"{len(rs)} of {total} route registration(s) in this file have no authentication marker (login/auth dependency, decorator, guard) within a few lines. It may be enforced by a gateway, a router-level dependency or a base class: confirm by reading the code.",
-                         locations=[dict(line=r["line"], snippet=f"{r['method']} {r['path']}") for r in rs[:25]]))
+                         locations=[dict(line=r["line"], snippet=r.get("source") or f"{r['method']} {r['path']}") for r in rs[:25]]))
 
 
 def find_routes(rel, text, tags, out, cap=3000):
@@ -608,7 +608,8 @@ def find_routes(rel, text, tags, out, cap=3000):
                 auth = "public by convention"
             else:
                 auth = "none seen"
-            out.append(dict(file=rel, line=ln, framework=fw, method=method, path=path or "(unspecified)", auth=auth))
+            out.append(dict(file=rel, line=ln, framework=fw, method=method, path=path or "(unspecified)", auth=auth,
+                            source=lines[ln - 1].strip()[:200] if 0 < ln <= len(lines) else ""))
             if len(out) >= cap:
                 return
 
@@ -689,11 +690,31 @@ def scan_history(root, max_commits, working_hashes, col, timeout=600):
     proc.wait()
     res["hits"] = len(seen)
     for (fil, _), s in list(seen.items())[:60]:
-        where = "still present in the working tree" if s["in_tree"] else "no longer in the working tree but remains in git history"
+        path = os.path.join(root, fil)
+        exists = os.path.isfile(path)
+        line_no, found = 1, False
+        if exists:                                   # cite the line where the value sits today, not "line 1"
+            try:
+                if os.path.getsize(path) <= 8 * 1024 * 1024:
+                    with open(path, encoding="utf-8", errors="replace") as fh:
+                        for n, ln_text in enumerate(fh, 1):
+                            if len(ln_text) <= 2000 and ln_text.strip() and redact_line(ln_text) == s["snippet"]:
+                                line_no, found = n, True
+                                break
+            except OSError:
+                pass
+        if s["in_tree"] and found:
+            where = "still present in this file in the working tree"
+        elif s["in_tree"] and exists:
+            where = "this file still exists and the same value is present in the working tree"
+        elif s["in_tree"]:
+            where = "this file no longer exists, but the same value is still present elsewhere in the working tree"
+        else:
+            where = "no longer in the working tree but remains in git history"
         meta = dict(id="SEC-HIST-1", domain="secrets", severity=s["severity"], cwe="CWE-798", owasp="A02",
                     title=f"Secret in git history: {s['name']}", fix="Treat as compromised: rotate/revoke now, then purge history (git filter-repo / BFG) and force-push, and invalidate clones. Add pre-commit and CI secret scanning.",
                     confidence="High")
-        col.add(meta, fil, 1, s["snippet"], "test" if TEST_RX.search(fil) else "source",
+        col.add(meta, fil, line_no, s["snippet"], "test" if TEST_RX.search(fil) else "source",
                 detail=f"Introduced in commit {s['first_commit']} ({s['first_date'][:10]}); {where}; {s['occurrences']} occurrence(s) across history.")
     return res
 
@@ -916,15 +937,76 @@ def prefill_checklist(cands, ref_dir):
     return out
 
 
+class PrefixCollector:
+    """Collector facade for one repository of a multi-repository scan: every path it records is prefixed with the repository folder name."""
+
+    def __init__(self, base, prefix):
+        self.base, self.prefix = base, prefix
+
+    def add(self, meta, file, line, snippet, ctx, extra_title=None, detail=None, source="scanner"):
+        self.base.add(meta, self.prefix + file, line, snippet, ctx, extra_title=extra_title, detail=detail, source=source)
+
+    def add_raw(self, d):
+        d = dict(d)
+        d["file"] = self.prefix + d["file"]
+        if d.get("locations"):
+            d["locations"] = [dict(l, file=self.prefix + l["file"]) if l.get("file") else l for l in d["locations"]]
+        self.base.add_raw(d)
+
+
+def new_inventory():
+    return dict(files=0, by_lang={}, manifests=[], iac=[], frameworks=set(), skipped_binary=0, loc=0, long_line_files=[], minified=[], commented_hits=0,
+                commented_files=[], flow_unparsed=[], flow_hits=0, excluded=0, components={}, jobs=1, routes=[])
+
+
+def merge_inventory(dst, src, pre=""):
+    """Fold one repository's inventory into the combined one, prefixing paths with the repository folder name."""
+    for k in ("files", "loc", "skipped_binary", "commented_hits", "flow_hits", "excluded"):
+        dst[k] += src.get(k, 0)
+    dst["jobs"] = max(dst["jobs"], src.get("jobs", 1))
+    for k, v in src["by_lang"].items():
+        dst["by_lang"][k] = dst["by_lang"].get(k, 0) + v
+    for k in ("manifests", "iac", "long_line_files", "minified", "flow_unparsed", "commented_files"):
+        dst[k].extend(pre + x for x in src.get(k, []))
+    dst["frameworks"].update(src.get("frameworks", []))
+    for name, cv in src["components"].items():
+        dst["components"][pre + name] = cv
+    for r in src.get("routes", []):
+        if len(dst["routes"]) < 3000:
+            dst["routes"].append(dict(r, file=pre + r["file"]))
+
+
+def component_in_scan(file, names, multi):
+    """Component of a (possibly repository-prefixed) path, matching the keys produced by merge_inventory."""
+    if not multi:
+        return component_of(file)
+    repo, _, rest = file.partition("/")
+    return f"{repo}/{component_of(rest) if rest else '(repository root)'}" if repo in names else component_of(file)
+
+
+def bind_inputs(items, names, what):
+    """`--sarif NAME=FILE` / `--osv-results NAME=FILE`: bind inputs to a repository; a bare FILE is allowed when there is only one."""
+    bound = {n: [] for n in names}
+    for it in items or []:
+        head, sep, tail = it.partition("=")
+        if sep and head in bound:
+            bound[head].append(tail)
+        elif len(names) == 1:
+            bound[names[0]].append(it)
+        else:
+            sys.exit(f"error: with several repositories, give {what} as NAME=FILE where NAME is one of: {', '.join(names)}")
+    return bound
+
+
 def main():
     ap = argparse.ArgumentParser(description="Offline static security scan; writes scan.json + sbom.cdx.json")
-    ap.add_argument("repo", help="path to the source repository")
+    ap.add_argument("repo", nargs="+", help="path to the source repository; give several to scan them as one workspace (paths in the report are prefixed with each folder name)")
     ap.add_argument("--out", default="./security-audit", help="output directory")
     ap.add_argument("--name", help="application name for the report/SBOM (default: folder name)")
     ap.add_argument("--max-file-kb", type=int, default=1024)
     ap.add_argument("--no-git-history", action="store_true", help="skip the git history secret scan")
     ap.add_argument("--max-commits", type=int, default=5000)
-    ap.add_argument("--osv-results", help="osv-scanner JSON produced elsewhere (imported, not executed)")
+    ap.add_argument("--osv-results", action="append", default=[], help="osv-scanner JSON produced elsewhere (imported, not executed); with several repositories use NAME=FILE; repeatable")
     ap.add_argument("--jobs", type=int, default=_default_jobs(), help="worker processes for large repositories (default: up to 8; 1 disables)")
     ap.add_argument("--exclude", action="append", default=[], help="glob or path to skip (repeatable), e.g. --exclude 'vendor/*' --exclude third_party")
     ap.add_argument("--exclude-from", help="file with one exclude pattern per line")
@@ -932,12 +1014,24 @@ def main():
     ap.add_argument("--previous", help="scan.json of an earlier run to compare against (default: the scan.json already in --out; 'none' disables)")
     ap.add_argument("--cap-per-rule", type=int, default=40, help="max candidates listed per rule (extra files are counted, not listed)")
     ap.add_argument("--advisory-db", help="advisory snapshot to use instead of references/advisory-db.json.gz (see tools/build_advisory_db.py)")
-    ap.add_argument("--sarif", action="append", default=[], help="SARIF file from another tool (Semgrep, CodeQL, ...) to merge; repeatable")
+    ap.add_argument("--sarif", action="append", default=[], help="SARIF file from another tool (Semgrep, CodeQL, ...) to merge; repeatable; with several repositories use NAME=FILE")
     a = ap.parse_args()
 
-    root = os.path.abspath(a.repo)
-    if not os.path.isdir(root):
-        sys.exit(f"error: {root} is not a directory")
+    roots = []
+    for r_ in a.repo:
+        ar = os.path.abspath(r_)
+        if not os.path.isdir(ar):
+            sys.exit(f"error: {ar} is not a directory")
+        if ar not in roots:
+            roots.append(ar)
+    multi = len(roots) > 1
+    names, seen_names = [], {}
+    for r_ in roots:
+        n_ = os.path.basename(r_.rstrip("/")) or "repository"
+        seen_names[n_] = seen_names.get(n_, 0) + 1
+        names.append(n_ if seen_names[n_] == 1 else f"{n_}-{seen_names[n_]}")
+    root = roots[0]
+    scope_label = "workspace" if multi else names[0]                     # what the ID registry and the previous-scan check are keyed on
     os.makedirs(a.out, exist_ok=True)
     t0 = time.time()
     col = Collector()
@@ -950,41 +1044,80 @@ def main():
             sys.exit(f"error: cannot read --exclude-from: {e}")
     prev_path = a.previous or os.path.join(a.out, "scan.json")
     prev = None if (a.previous or "").lower() == "none" else load_previous(prev_path)
-    if prev and (prev.get("meta") or {}).get("repository") != os.path.basename(root):
+    if prev and ((prev.get("meta") or {}).get("registry_label") or (prev.get("meta") or {}).get("repository")) != scope_label:
         prev = None
-    inv, manifest_files, working_hashes = scan_tree(
-        root, a.max_file_kb, col, jobs=max(1, a.jobs), excludes=excludes,
-        progress=lambda n, t: print(f"  ... {n:,}/{t:,} files scanned", file=sys.stderr, flush=True))
 
-    routes_to_findings(inv["routes"], col)
-    comps = depmod.collect(manifest_files)
+    sarif_by = bind_inputs(a.sarif, names, "--sarif")
+    osv_by = bind_inputs(a.osv_results, names, "--osv-results")
     db = depmod.load_db(a.advisory_db)
     dbi = depmod.db_info(db)
-    unresolved = 0
-    for d in depmod.analyze(comps, manifest_files, a.osv_results, db):
-        if d["rule"] == "_DEPSTAT":
-            unresolved = d["unresolved"]
-            continue
-        d.setdefault("fix", "")
-        col.add_raw(d)
-    app = a.name or os.path.basename(root.rstrip("/")) or "application"
-    gm = git_meta(root)
-    with open(os.path.join(a.out, "sbom.cdx.json"), "w", encoding="utf-8") as fh:
-        json.dump(depmod.sbom(comps, app, gm.get("commit") or "unknown"), fh, indent=2)
-
+    inv = new_inventory()
+    manifest_files, comps, gms = [], [], {}
+    unresolved, sarif_n, skipped_large_all = 0, 0, []
     hist = dict(ran=False, note="Skipped by --no-git-history.", commits_scanned=0, hits=0)
-    if not a.no_git_history:
-        hist = scan_history(root, a.max_commits, working_hashes, col)
-    sarif_n = sum(import_sarif(p, col) for p in a.sarif)
+    hist_notes = []
+    for root_i, name_i in zip(roots, names):
+        pre = name_i + "/" if multi else ""
+        pcol = PrefixCollector(col, pre) if multi else col
+        if multi:
+            print(f"== {name_i}", file=sys.stderr, flush=True)
+        inv_i, manifest_i, working_hashes = scan_tree(
+            root_i, a.max_file_kb, pcol, jobs=max(1, a.jobs), excludes=excludes,
+            progress=lambda n, t, nm=name_i: print(f"  ... {nm}: {n:,}/{t:,} files scanned", file=sys.stderr, flush=True))
+        skipped_large_all += [pre + x for x in getattr(walk, "skipped_large", [])]
+        merge_inventory(inv, inv_i, pre)
+        routes_i = [dict(r, file=pre + r["file"]) for r in inv_i["routes"]]
+        routes_to_findings(routes_i, col)
+        manifest_pre = [(ap_, pre + rel_) for ap_, rel_ in manifest_i]
+        manifest_files.extend(manifest_pre)
+        comps_i = depmod.collect(manifest_pre)
+        for c_ in comps_i:
+            c_["repo"] = name_i
+        comps.extend(comps_i)
+        osv_paths = osv_by.get(name_i) or [None]
+        for osv_path in osv_paths:
+            for d in depmod.analyze(comps_i, manifest_pre, osv_path, db):
+                if d["rule"] == "_DEPSTAT":
+                    if osv_path == osv_paths[0]:
+                        unresolved += d["unresolved"]
+                    continue
+                if osv_path != osv_paths[0] and d["rule"] != "DEP-1":
+                    continue                                  # extra OSV files only add vulnerability findings
+                d.setdefault("fix", "")
+                if multi and not d["file"].startswith(pre):
+                    d["file"] = pre + d["file"]             # paths from an imported OSV file are relative to that repository
+                col.add_raw(d)
+        gms[name_i] = git_meta(root_i)
+        if not a.no_git_history:
+            h_i = scan_history(root_i, a.max_commits, working_hashes, pcol)
+            hist["ran"] = hist["ran"] or h_i.get("ran", False)
+            hist["commits_scanned"] += h_i.get("commits_scanned", 0)
+            hist["hits"] += h_i.get("hits", 0)
+            if h_i.get("note"):
+                hist_notes.append((name_i + ": " if multi else "") + h_i["note"])
+        sarif_n += sum(import_sarif(p_, pcol) for p_ in sarif_by.get(name_i, []))
+    inv["frameworks"] = sorted(inv["frameworks"])
+    if a.no_git_history:
+        hist["note"] = "Skipped by --no-git-history."
+    else:
+        hist["note"] = " ".join(hist_notes)
+    app = a.name or (names[0] if not multi else "Workspace: " + ", ".join(names[:4]) + (f" and {len(names) - 4} more" if len(names) > 4 else ""))
+    gm = gms[names[0]] if not multi else {}
+    sbom_doc = depmod.sbom(comps, app, (gm.get("commit") or "unknown") if not multi else "workspace")
+    with open(os.path.join(a.out, "sbom.cdx.json"), "w", encoding="utf-8") as fh:
+        json.dump(sbom_doc, fh, indent=2)
 
-    cands, suppressed = finalize(col, a.cap_per_rule)
-    repo_name = os.path.basename(root)
+    cands, suppressed = finalize(col, a.cap_per_rule * (len(roots) if multi else 1))
+    repo_name = scope_label
     id_note = assign_stable_ids(cands, os.path.join(a.out, "finding-ids.json"), repo_name)
     supp_paths = list(a.suppressions)
-    for cand in (os.path.join(root, ".appsec-audit", "suppressions.json"), os.path.join(a.out, "suppressions.json")):
+    per_repo_supp = [os.path.join(r_, ".appsec-audit", "suppressions.json") for r_ in roots]
+    for cand in ([per_repo_supp[0]] if not multi else []) + [os.path.join(a.out, "suppressions.json")]:
         if os.path.exists(cand) and cand not in supp_paths:
             supp_paths.append(cand)
     supp_entries, supp_problems = load_suppressions(supp_paths)
+    if multi and any(os.path.exists(p_) for p_ in per_repo_supp):
+        supp_problems.append("a repository's own .appsec-audit/suppressions.json was not applied in a multi-repository scan; pass it with --suppressions and prefix its file_regex values with the repository folder name")
     supp_applied, supp_expired = apply_suppressions(cands, supp_entries)
     changes = compare_previous(cands, prev) if prev else None
     eco = {}
@@ -999,7 +1132,7 @@ def main():
         e["from_lockfile"] += 1 if c.get("kind") == "lock" else 0
     comp_rows = []
     for name, cv in inv["components"].items():
-        fs = [c for c in cands if component_of(c["file"]) == name]
+        fs = [c for c in cands if component_in_scan(c["file"], names, multi) == name]
         sc = {sv: sum(1 for c in fs if c["severity"] == sv) for sv in R.SEV}
         comp_rows.append(dict(component=name, files=cv["files"], lines=cv["lines"], routes=cv["routes"], manifests=cv["manifests"], iac_files=cv["iac"],
                               candidates=len(fs), critical=sc["Critical"], high=sc["High"], medium=sc["Medium"], low=sc["Low"] + sc["Info"]))
@@ -1050,22 +1183,28 @@ def main():
         limitations.append(f"{supp_expired} candidate(s) match a suppression entry that has expired and are treated as open again.")
     if not hist["ran"]:
         limitations.append("Git history was not scanned: " + hist.get("note", ""))
-    if getattr(walk, "skipped_large", None):
-        limitations.append(f"{len(walk.skipped_large)} file(s) over {a.max_file_kb} KB were not scanned.")
+    if skipped_large_all:
+        limitations.append(f"{len(skipped_large_all)} file(s) over {a.max_file_kb} KB were not scanned.")
+    if multi:
+        limitations.insert(0, f"Workspace scan of {len(roots)} repositories ({', '.join(names)}): every path is prefixed with its repository folder name (`repo/path`), counts and the SBOM combine all repositories, "
+                              "and each repository's own revision is listed in the report. --exclude patterns apply inside each repository, suppression file_regex values must include the repository prefix, "
+                              "and the same dependency declared in two repositories is reported once per repository.")
     if suppressed:
         limitations.append("Per-rule display cap reached (additional matching files not listed): " + ", ".join(f"{k} (+{v})" for k, v in suppressed.items()))
 
     scan = dict(
-        meta=dict(tool="appsec-static-audit", version=VERSION, application=app, repository=os.path.basename(root), scanned_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+        meta=dict(tool="appsec-static-audit", version=VERSION, application=app,
+                  repository=(f"{len(names)} repositories: " + ", ".join(names)) if multi else names[0], registry_label=scope_label, repositories=gms if multi else None,
+                  scanned_at=datetime.now().astimezone().isoformat(timespec="seconds"),
                   git=gm, duration_s=round(time.time() - t0, 1), frameworks=inv["frameworks"],
                   run=dict(scanner_sha256=tool_fingerprint(), advisory_db_sha256=file_sha256(os.path.abspath(a.advisory_db or depmod.DB_PATH)) if dbi.get("available") else "",
                            python=sys.version.split()[0], jobs=inv["jobs"], rules=len(R.RULES), presence_checks=len(R.PRESENCE),
                            options=dict(max_file_kb=a.max_file_kb, max_commits=a.max_commits, git_history=not a.no_git_history, excludes=excludes,
-                                        cap_per_rule=a.cap_per_rule, osv_results=bool(a.osv_results), sarif_files=len(a.sarif),
+                                        cap_per_rule=a.cap_per_rule, osv_results=bool(a.osv_results), sarif_files=len(a.sarif), repositories=names,
                                         suppression_files=[os.path.basename(p) for p in supp_paths]))),
         inventory=dict(files_scanned=inv["files"], lines=inv["loc"], by_tag=dict(sorted(inv["by_lang"].items())), manifests=inv["manifests"],
                        iac_files=inv["iac"][:200], frameworks=inv["frameworks"], skipped_binary=inv["skipped_binary"],
-                       skipped_large=getattr(walk, "skipped_large", []),
+                       skipped_large=skipped_large_all,
                        not_scanned=dict(minified=inv["minified"], long_lines=inv["long_line_files"], flow_unparsed=inv["flow_unparsed"],
                                         commented_rule_matches=inv["commented_hits"]),
                        flow_candidates=inv["flow_hits"]),

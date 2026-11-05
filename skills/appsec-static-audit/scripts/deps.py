@@ -192,6 +192,17 @@ def db_matches(db, eco, name, version):
     return out
 
 
+REQ_NAME_RX = re.compile(r"[\w.\-]*(requirements|constraints)[\w.\-]*\.(txt|in)", re.I)
+REQ_DIR_RX = re.compile(r"(^|/)requirements?(\.d)?/[^/]+\.(txt|in)$", re.I)
+
+
+def is_requirements_file(path):
+    """pip requirement / constraint files under any naming convention: requirements.txt, dev-requirements.in, prod_requirements.txt,
+    constraints.txt, requirements/base.txt ..."""
+    p = (path or "").replace("\\", "/")
+    return bool(REQ_NAME_RX.fullmatch(os.path.basename(p)) or REQ_DIR_RX.search(p))
+
+
 def _read(path):
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
@@ -340,6 +351,42 @@ def parse_nuget_lock(path, rel, text):
     return out
 
 
+_LOCK_INDEX = {
+    "package-lock.json": r'^\s*"(?:[^"]*/)?node_modules/(?P<n>@[^"/]+/[^"/]+|[^"/@][^"/]*)"\s*:',
+    "npm-shrinkwrap.json": r'^\s*"(?:[^"]*/)?node_modules/(?P<n>@[^"/]+/[^"/]+|[^"/@][^"/]*)"\s*:',
+    "yarn.lock": r'^"?(?P<n>@?[^@\s"]+)@',
+    "pnpm-lock.yaml": r"^\s+['\"]?/?(?P<n>(?:@[^/@\s'\"]+/)?[^@/\s'\"]+)[@/]\d",
+    "poetry.lock": r'^name\s*=\s*"(?P<n>[^"]+)"', "uv.lock": r'^name\s*=\s*"(?P<n>[^"]+)"', "pdm.lock": r'^name\s*=\s*"(?P<n>[^"]+)"',
+    "Cargo.lock": r'^name\s*=\s*"(?P<n>[^"]+)"',
+    "composer.lock": r'^\s*"name"\s*:\s*"(?P<n>[^"]+)"',
+    "Gemfile.lock": r"^\s{4}(?P<n>[A-Za-z0-9_.\-]+) \(",
+    "packages.lock.json": r'^\s*"(?P<n>[^"]+)"\s*:\s*\{',
+    "Pipfile.lock": r'^\s*"(?P<n>[^"]+)"\s*:\s*\{',
+}
+
+
+def _norm_pkg(n):
+    return re.sub(r"[-_.]+", "-", n.lower())
+
+
+def _locate_in_lock(base, text, comps):
+    """One pass over a lockfile: remember the first line that declares each package, so findings can cite the real line."""
+    pat = _LOCK_INDEX.get(base)
+    if not pat or not comps or not any(not c.get("line") for c in comps):
+        return
+    rx = re.compile(pat, re.I)
+    idx = {}
+    for i, line in enumerate(text.split("\n"), 1):
+        m = rx.match(line)
+        if m:
+            idx.setdefault(_norm_pkg(m.group("n")), (i, line.strip()[:160]))
+    for c in comps:
+        if not c.get("line"):
+            hit = idx.get(_norm_pkg(c["name"].split("/")[-1] if c["ecosystem"] == "golang" else c["name"]))
+            if hit:
+                c["line"], c["raw"] = hit[0], c.get("raw") or hit[1]
+
+
 def parse_pom(path, rel, text):
     out = []
     try:
@@ -352,6 +399,8 @@ def parse_pom(path, rel, text):
     props = {}
     for p in root.findall(f"{ns}properties/*"):
         props[p.tag.replace(ns, "")] = (p.text or "").strip()
+    tlines = text.split("\n")
+    cursor = {}
     for d in root.iter(f"{ns}dependency"):
         g = (d.findtext(f"{ns}groupId") or "").strip()
         a = (d.findtext(f"{ns}artifactId") or "").strip()
@@ -360,7 +409,13 @@ def parse_pom(path, rel, text):
         if m:
             v = props.get(m.group(1), "")
         if a:
-            out.append(_comp("maven", f"{g}:{a}", v or None, v or "managed", rel))
+            ln, raw = 0, ""
+            start = cursor.get(a, 0)
+            for i in range(start, len(tlines)):
+                if re.search(r"<artifactId>\s*" + re.escape(a) + r"\s*</artifactId>", tlines[i]):
+                    ln, raw, cursor[a] = i + 1, tlines[i].strip()[:160], i + 1
+                    break
+            out.append(_comp("maven", f"{g}:{a}", v or None, v or "managed", rel, line=ln, raw=raw))
     return out
 
 
@@ -369,7 +424,7 @@ def parse_gradle(path, rel, text):
     for i, line in enumerate(text.splitlines(), 1):
         m = re.search(r"(implementation|api|compile|runtimeOnly|compileOnly|testImplementation|annotationProcessor)\s*\(?\s*[\"']([^:\"']+):([^:\"']+):([^\"')]+)[\"']", line)
         if m:
-            out.append(_comp("maven", f"{m.group(2)}:{m.group(3)}", m.group(4), m.group(4), rel, m.group(1).startswith("test"), i))
+            out.append(_comp("maven", f"{m.group(2)}:{m.group(3)}", m.group(4), m.group(4), rel, m.group(1).startswith("test"), i, raw=line.strip()[:160]))
     return out
 
 
@@ -378,7 +433,7 @@ def parse_go_mod(path, rel, text):
     for i, line in enumerate(text.splitlines(), 1):
         m = re.match(r"\s*(?:require\s+)?([a-z0-9.\-]+\.[a-z]{2,}/[^\s]+)\s+v([^\s]+)", line)
         if m:
-            out.append(_comp("golang", m.group(1), m.group(2), m.group(2), rel, line=i))
+            out.append(_comp("golang", m.group(1), m.group(2), m.group(2), rel, line=i, raw=line.strip()[:160]))
     return out
 
 
@@ -402,9 +457,9 @@ def parse_composer_lock(path, rel, text):
 def parse_csproj(path, rel, text):
     out = []
     for m in re.finditer(r'<PackageReference\s+Include="([^"]+)"[^>]*?Version="([^"]+)"', text):
-        out.append(_comp("nuget", m.group(1).lower(), m.group(2), m.group(2), rel))
+        out.append(_comp("nuget", m.group(1).lower(), m.group(2), m.group(2), rel, line=text.count("\n", 0, m.start()) + 1, raw=" ".join(m.group(0).split())[:160]))
     for m in re.finditer(r'<package\s+id="([^"]+)"\s+version="([^"]+)"', text):
-        out.append(_comp("nuget", m.group(1).lower(), m.group(2), m.group(2), rel))
+        out.append(_comp("nuget", m.group(1).lower(), m.group(2), m.group(2), rel, line=text.count("\n", 0, m.start()) + 1, raw=" ".join(m.group(0).split())[:160]))
     return out
 
 
@@ -412,7 +467,7 @@ PARSERS = [
     (lambda n: n == "package.json", parse_package_json),
     (lambda n: n in ("package-lock.json", "npm-shrinkwrap.json"), parse_package_lock),
     (lambda n: n == "yarn.lock", parse_yarn_lock),
-    (lambda n: re.fullmatch(r"requirements[\w.\-]*\.txt", n) is not None, parse_requirements),
+    (lambda n: REQ_NAME_RX.fullmatch(n) is not None, parse_requirements),
     (lambda n: n == "Pipfile.lock", parse_pipfile_lock),
     (lambda n: n in ("poetry.lock", "uv.lock", "pdm.lock"), parse_poetry_lock),
     (lambda n: n == "Cargo.lock", parse_cargo_lock),
@@ -433,13 +488,19 @@ def collect(files):
     comps = []
     for ap, rp in files:
         base = os.path.basename(ap)
-        for match, parser in PARSERS:
-            if match(base):
-                kind = "lock" if base in LOCK_BASENAMES and base != "requirements.txt" else "manifest"
-                for c in parser(ap, rp, _read(ap)):
-                    c["kind"] = kind
-                    comps.append(c)
-                break
+        parser = next((p for m, p in PARSERS if m(base)), None)
+        if parser is None and REQ_DIR_RX.search(rp.replace("\\", "/")):
+            parser = parse_requirements
+        if parser is None:
+            continue
+        kind = "lock" if base in LOCK_BASENAMES and base != "requirements.txt" else "manifest"
+        text = _read(ap)
+        found = parser(ap, rp, text)
+        if kind == "lock":
+            _locate_in_lock(base, text, found)
+        for c in found:
+            c["kind"] = kind
+            comps.append(c)
     locked = {(c["ecosystem"], c["name"].lower()) for c in comps if c["kind"] == "lock" and c["version"]}
     declared = {(c["ecosystem"], c["name"].lower()) for c in comps if c["kind"] == "manifest"}
     eco_has_lock = {e for e, _ in locked}
@@ -466,17 +527,28 @@ def purl(c):
 
 
 def sbom(components, app_name, app_version="unknown"):
+    """CycloneDX 1.5. A package declared in several files or repositories is one component with one `source` property per declaration."""
+    merged = {}
+    for c in components:
+        ref = purl(c)
+        comp = merged.get(ref)
+        if comp is None:
+            comp = merged[ref] = {"type": "library", "bom-ref": ref, "name": c["name"], "version": c["version"] or c["spec"], "purl": ref,
+                                  "scope": "optional" if c["dev"] else "required", "properties": []}
+            if c.get("direct") is not None:
+                comp["properties"].append({"name": "dependency-type", "value": "direct" if c.get("direct") else "transitive"})
+        elif not c["dev"]:
+            comp["scope"] = "required"
+        src = {"name": "source", "value": c["file"]}
+        if src not in comp["properties"]:
+            comp["properties"].insert(0, src)
     return {
         "bomFormat": "CycloneDX", "specVersion": "1.5", "version": 1,
         "serialNumber": f"urn:uuid:{uuid.uuid4()}",
         "metadata": {"timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                      "tools": [{"vendor": "appsec-static-audit", "name": "deps.py", "version": "1.0"}],
                      "component": {"type": "application", "name": app_name, "version": app_version}},
-        "components": [{"type": "library", "bom-ref": purl(c), "name": c["name"], "version": c["version"] or c["spec"],
-                        "purl": purl(c), "scope": "optional" if c["dev"] else "required",
-                        "properties": [{"name": "source", "value": c["file"]}] +
-                                      ([{"name": "dependency-type", "value": "direct" if c.get("direct") else "transitive"}] if c.get("direct") is not None else [])}
-                       for c in components],
+        "components": list(merged.values()),
     }
 
 
@@ -531,7 +603,7 @@ def analyze(components, root_files, osv_results=None, db=None):
                     if version_lt(c["version"], fixed):
                         vulns.append(dict(ids=ids, severity=sev, summary=note, fixed=[fixed]))
             if vulns:
-                ent = by_comp.setdefault((c["ecosystem"], _norm_name(c["ecosystem"], c["name"]), c["version"]), dict(comp=c, vulns=[]))
+                ent = by_comp.setdefault((c["ecosystem"], _norm_name(c["ecosystem"], c["name"]), c["version"], c.get("repo", "")), dict(comp=c, vulns=[]))
                 _merge_vulns(ent["vulns"], vulns)
         elif c["ecosystem"] in ("npm", "pypi", "maven", "golang", "rubygems", "packagist", "nuget", "cargo") and c.get("kind") != "lock" and not (c["spec"] or "").startswith(("git", "http", "file", "github:")):
             unresolved += 1
@@ -544,17 +616,17 @@ def analyze(components, root_files, osv_results=None, db=None):
                                  confidence="High", owasp="A06"))
         spec = c["spec"] or ""
         if (c["ecosystem"] == "npm" and not c["version"] and re.search(r"^(\*|latest|x|)$|^(git|https?|github:|file:)", spec)) or \
-                (c["ecosystem"] == "pypi" and os.path.basename(c["file"]).startswith("requirements") and not c["version"]):
+                (c["ecosystem"] == "pypi" and is_requirements_file(c["file"]) and not c["file"].lower().endswith(".in") and not c["version"]):
             unpinned.setdefault((c["file"], c["ecosystem"]), []).append((c["name"], spec or "*", c["line"] or 1, c.get("raw") or f"{c['name']} {spec or '*'}"))
 
     # imported connected-scan results (osv-scanner JSON) merge into the same per-component findings
     if osv_results:
         for (eco, name, ver, src, vulns) in import_osv(osv_results):
-            ent = by_comp.setdefault((eco, _norm_name(eco, name), ver), dict(comp=dict(ecosystem=eco, name=name, version=ver, file=src, line=1, dev=False, direct=None), vulns=[]))
+            ent = by_comp.setdefault((eco, _norm_name(eco, name), ver, ""), dict(comp=dict(ecosystem=eco, name=name, version=ver, file=src, line=1, dev=False, direct=None), vulns=[]))
             ent["imported"] = True
             _merge_vulns(ent["vulns"], vulns)
 
-    for (eco, _, ver), ent in by_comp.items():
+    for (eco, _, ver, _repo), ent in by_comp.items():
         c, vulns = ent["comp"], ent["vulns"]
         vulns.sort(key=lambda v: SEV_ORDER.index(v["severity"]))
         sev = vulns[0]["severity"]
@@ -679,10 +751,18 @@ def _edit1(a, b):
     return a[i:] == b[i + 1:]
 
 
+# established packages whose names legitimately sit one edit away from a more popular one
+KNOWN_LOOKALIKES = {"markdown2", "psycopg", "psycopg2", "psycopg3", "python-jose", "pyjwt", "mysqlclient", "pymysql", "pytest-cov", "pytest-mock",
+                    "pytest-asyncio", "flask-cors", "flask-login", "flask-sqlalchemy", "django-cors-headers", "lodash-es", "react-is", "vue-router",
+                    "vue-loader", "core-js-pure", "dotenv-expand", "dotenv-flow", "cross-fetch", "node-fetch-native", "ts-node", "socket.io-client"}
+
+
 def _squat_of(eco, name):
     n = name.lower()
     pop = POPULAR_SET.get(eco)
-    if not pop or n in pop or n.startswith("@") or len(n) < 5:
+    if not pop or n in pop or n in KNOWN_LOOKALIKES or n.startswith("@") or len(n) < 5:
+        return None
+    if any(re.fullmatch(re.escape(p) + r"\d{1,2}", n) for p in pop):       # markdown2, pillow3: a major-version style suffix is not a typo
         return None
     flat = re.sub(r"[-_.]", "", n)
     for p in pop:
@@ -742,7 +822,7 @@ def scan_manifests(root_files, components):
                                     title="Lockfile contains packages from non-default hosts or without integrity hashes", file=rel, line=1,
                                     detail="Hosts / gaps: " + ", ".join(f"{h} ({n})" for h, n in sorted(hosts.items(), key=lambda x: -x[1])[:6]) + ". Confirm these are your private registry and that integrity is enforced.",
                                     fix="Resolve everything through one trusted registry, keep integrity fields, and block unexpected hosts with a registry allowlist.", confidence="Low", owasp="A08"))
-        elif base in (".npmrc", ".yarnrc", ".yarnrc.yml", "pip.conf", "pip.ini") or re.fullmatch(r"requirements[\w.\-]*\.txt", base):
+        elif base in (".npmrc", ".yarnrc", ".yarnrc.yml", "pip.conf", "pip.ini") or is_requirements_file(rel):
             text = _read(ap)
             for i, line in enumerate(text.splitlines(), 1):
                 ln = line.strip()

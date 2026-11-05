@@ -110,6 +110,58 @@ def load_frameworks(extra):
     return fw
 
 
+def _bulk_match(b, f):
+    if b.get("rule") and not (f["rule"] == b["rule"] or (b["rule"].endswith("*") and f["rule"].startswith(b["rule"][:-1]))):
+        return False
+    if b.get("file_regex") and not re.search(b["file_regex"], f["file"]):
+        return False
+    if b.get("snippet_regex") and not re.search(b["snippet_regex"], " ".join(l.get("snippet", "") for l in f["locations"])):
+        return False
+    return bool(b.get("rule") or b.get("file_regex") or b.get("snippet_regex"))
+
+
+def previous_confirmed(ptri, pscan):
+    """What an earlier review confirmed: scanner candidates (with overrides applied) and hand-written findings."""
+    byfp = {f["fingerprint"]: f["id"] for f in pscan["findings"] if f.get("fingerprint")}
+    explicit = {byfp.get(k, k): (v.get("decision") if isinstance(v, dict) else v) for k, v in (ptri.get("decisions") or {}).items()}
+    ov = {byfp.get(k, k): v for k, v in (ptri.get("overrides") or {}).items()}
+    out = []
+    for f in pscan["findings"]:
+        d = explicit.get(f["id"])
+        if d is None and f.get("suppression"):
+            d = "accepted_risk" if f["suppression"].get("type") == "accepted_risk" else "false_positive"
+        if d is None:
+            d = next((b["decision"] for b in (ptri.get("bulk") or []) if _bulk_match(b, f)), None)
+        if str(d or "").lower().replace(" ", "_") != "confirmed":
+            continue
+        o = ov.get(f["id"]) or {}
+        out.append(dict(kind="scanner", id=f["id"], fp=f.get("fingerprint"), rule=f["rule"], title=o.get("title") or f["title"], severity=o.get("severity") or f["severity"],
+                        file=o.get("file") or f["file"], line=o.get("line") or f["line"], cwe=f.get("cwe") or o.get("cwe", "")))
+    for n in ptri.get("new_findings") or []:
+        out.append(dict(kind="manual", id=n.get("id", ""), key=n.get("key") or f"{n.get('file', '')}|{n.get('cwe', '')}|{n['domain']}", title=n["title"],
+                        severity=n["severity"], file=n.get("file", ""), line=n.get("line", 1), cwe=n.get("cwe", "")))
+    return out
+
+
+def source_revision(meta, git):
+    repos = meta.get("repositories")
+    if repos:
+        items = [f"{n}: {(g or {}).get('branch') or '—'} @ {(g or {}).get('commit') or 'not under git'}" for n, g in repos.items()]
+        return "; ".join(items[:8]) + (f" (+{len(items) - 8} more, see Appendix A)" if len(items) > 8 else "")
+    return f"{git.get('branch', '—')} @ {git.get('commit', '—')}" if git.get("commit") else "Not under git / unknown"
+
+
+def repository_revisions(meta, git):
+    repos = meta.get("repositories")
+    if repos:
+        lines = []
+        for n, g in list(repos.items())[:40]:
+            g = g or {}
+            lines.append(f"{n}: " + (f"`{g['commit_full']}` ({'uncommitted changes to tracked files' if g.get('dirty') else 'clean'})" if g.get("commit_full") else "not under git"))
+        return "<br>".join(lines) + (f"<br>…and {len(repos) - 40} more" if len(repos) > 40 else "")
+    return (f"`{git['commit_full']}`" + (" (working tree had uncommitted changes to tracked files)" if git.get("dirty") else " (clean)")) if git.get("commit_full") else "not under git"
+
+
 def norm_ws(x):
     return re.sub(r"\s+", " ", x or "").strip()
 
@@ -120,11 +172,26 @@ def _evidence_fragments(evidence):
     return sorted([p for p in frags if len(p) >= 10], key=len, reverse=True)[:2]
 
 
+def resolve_repo_file(repos, rel):
+    """Absolute path of `rel` inside one of the repositories (also accepting `<repo-folder>/path` for multi-repository scans), or None."""
+    repos = [repos] if isinstance(repos, str) else list(repos or [])
+    for r in repos:
+        root = os.path.realpath(r)
+        cands = [rel or ""]
+        head = os.path.basename(root.rstrip(os.sep)) + "/"
+        if (rel or "").startswith(head):
+            cands.append(rel[len(head):])
+        for c in cands:
+            p = os.path.realpath(os.path.join(root, c))
+            if (p == root or p.startswith(root + os.sep)) and os.path.isfile(p):
+                return p
+    return None
+
+
 def check_evidence(repo, rel, line, evidence):
     """Check a hand-written citation against the working tree. -> (line, message|None, corrected). Quoted evidence may be abbreviated with '...'."""
-    root = os.path.realpath(repo)
-    p = os.path.realpath(os.path.join(root, rel or ""))
-    if not p.startswith(root + os.sep) or not os.path.isfile(p):
+    p = resolve_repo_file(repo, rel)
+    if p is None:
         return line, f"'{rel}' is not in the working tree (expected only for a git-history finding; otherwise fix the path)", False
     try:
         with open(p, encoding="utf-8", errors="replace") as fh:
@@ -186,10 +253,9 @@ def assign_manual_ids(manual, reg_path):
 
 
 def masked_excerpt(repo, rel, line, context=22):
-    """Masked source lines around `line`. The path must resolve inside the repository."""
-    root = os.path.realpath(repo)
-    p = os.path.realpath(os.path.join(root, rel))
-    if not (p == root or p.startswith(root + os.sep)) or not os.path.isfile(p):
+    """Masked source lines around `line`. The path must resolve inside a repository."""
+    p = resolve_repo_file(repo, rel)
+    if p is None:
         return "(file not available)"
     try:
         with open(p, encoding="utf-8", errors="replace") as fh:
@@ -298,7 +364,9 @@ def main():
     ap.add_argument("--strict-checklist", action="store_true", help="refuse to render while any checklist item lacks a reviewer status")
     ap.add_argument("--verification", help="verification.json from the independent second pass (default: <out>/work/verification.json if present)")
     ap.add_argument("--packets", metavar="DIR", help="instead of rendering, write blind verification packets for confirmed Critical/High findings into DIR (needs --repo)")
-    ap.add_argument("--repo", help="repository path: used by --packets to quote masked excerpts, and to check that hand-written file:line citations and quoted evidence match the source")
+    ap.add_argument("--repo", action="append", default=[], help="repository path (repeat for a multi-repository scan; paths prefixed with the folder name are understood): used by --packets to quote masked excerpts, and to check that hand-written file:line citations and quoted evidence match the source")
+    ap.add_argument("--previous-triage", metavar="FILE", help="triage.json of an earlier review of the same code: the report lists every finding it confirmed that this review does not confirm, and why")
+    ap.add_argument("--previous-scan", metavar="FILE", help="scan.json belonging to --previous-triage (default: scan.json next to it)")
     ap.add_argument("--strict-evidence", action="store_true", help="with --repo, treat a manual citation that does not match the source as an error instead of a warning")
     ap.add_argument("--emit-sarif", action="store_true", help="also write a SARIF 2.1.0 file next to the report (confirmed and unconfirmed findings; rejected ones as suppressed)")
     ap.add_argument("--fail-on", choices=["Critical", "High", "Medium", "Low"], help="exit with code 10 if a confirmed finding at or above this severity exists (for CI gates)")
@@ -320,9 +388,10 @@ def main():
     # ---------------- hand-written citations must match the source
     manual_items = [(n, n.get("file"), "line") for n in (tri.get("new_findings") or [])]
     ov_locs = [(loc, loc.get("file") or (tri.get("overrides") or {}).get(k, {}).get("file"), "line") for k, ov in (tri.get("overrides") or {}).items() for loc in (ov.get("locations") or [])]
-    if a.repo and os.path.isdir(a.repo):
+    repos_ok = [r for r in (a.repo or []) if os.path.isdir(r)]
+    if repos_ok:
         for n in tri.get("new_findings") or []:
-            ln, msg, fixed = check_evidence(a.repo, n.get("file"), int(n.get("line", 1) or 1), n.get("evidence"))
+            ln, msg, fixed = check_evidence(repos_ok, n.get("file"), int(n.get("line", 1) or 1), n.get("evidence"))
             if fixed:
                 n["line"] = ln
             if msg:
@@ -332,7 +401,7 @@ def main():
                 f_ = loc.get("file") or ov.get("file")
                 if not f_:
                     continue
-                ln, msg, fixed = check_evidence(a.repo, f_, int(loc.get("line", 1) or 1), loc.get("snippet"))
+                ln, msg, fixed = check_evidence(repos_ok, f_, int(loc.get("line", 1) or 1), loc.get("snippet"))
                 if fixed:
                     loc["line"] = ln
                 if msg:
@@ -352,14 +421,16 @@ def main():
         else:
             decisions[k] = v
     overrides = tri.get("overrides") or {}
-    findings, rejected, accepted = [], [], []
+    findings, rejected, accepted, cand_log = [], [], [], []
     by_fp = {f["fingerprint"]: f["id"] for f in scan["findings"]}
     decisions = {by_fp.get(k, k): v for k, v in decisions.items()}
     overrides = {by_fp.get(k, k): v for k, v in overrides.items()}
     for f in scan["findings"]:
         d = decisions.get(f["id"])
+        via = "explicit" if d is not None else ""
         if d is None and f.get("suppression"):
             sp = f["suppression"]
+            via = "suppression"
             d = "accepted_risk" if sp["type"] == "accepted_risk" else "false_positive"
             reasons[f["id"]] = (f"Suppressed by policy ({sp.get('owner') or 'owner not stated'}"
                                 + (f", expires {sp['expires']}" if sp.get("expires") else "") + f"): {sp['reason']}")
@@ -374,6 +445,7 @@ def main():
                 if not (b.get("rule") or b.get("file_regex") or b.get("snippet_regex")):
                     continue
                 d, reasons[f["id"]] = b["decision"], b.get("reason", "")
+                via = "bulk"
                 if b.get("into"):
                     into[f["id"]] = b["into"]
                 break
@@ -387,6 +459,8 @@ def main():
         f = {**f, **{k: v for k, v in (overrides.get(f["id"]) or {}).items() if k != "controls_extra"}}
         f["controls_extra"] = (overrides.get(f["id"]) or {}).get("controls_extra", {})
         f["decision"] = d
+        f["decided_by"] = via or "none"
+        cand_log.append(f)
         if d == "accepted_risk":
             if not reasons.get(f["id"]):
                 errors.append(f"{f['id']}: accepted_risk needs a reason (and should name an owner and expiry)")
@@ -401,11 +475,16 @@ def main():
             findings.append(f)
     reason_counts = {}
     for f_, r_, _d in rejected:
-        if f_["id"] in decisions and r_.strip():                      # explicit per-ID decisions only; bulk rules are deliberate
-            reason_counts.setdefault(norm_ws(r_).lower()[:220], []).append(f_["id"])
-    shared_reasons = [(ids[0], len(ids), k) for k, ids in reason_counts.items() if len(ids) >= 5]
-    for _first, n_, k in shared_reasons:
-        warnings.append(f"{n_} candidates were rejected with the identical reason \"{k[:90]}…\": use a `bulk` rule (rule/file_regex) if that is deliberate, otherwise give each its own evidence")
+        if r_.strip() and f_.get("decided_by") in ("explicit", "bulk"):
+            reason_counts.setdefault(norm_ws(r_).lower()[:220], []).append(f_)
+    shared_reasons = []
+    for k, fs_ in reason_counts.items():
+        n_exp = sum(1 for x in fs_ if x["decided_by"] == "explicit")
+        n_bulk = len(fs_) - n_exp
+        if n_exp >= 5 or n_bulk >= 25:
+            shared_reasons.append((fs_[0]["id"], len(fs_), k))
+            warnings.append(f"{len(fs_)} candidates were rejected with the identical reason \"{k[:90]}…\" ({'by bulk rules' if n_bulk >= n_exp else 'individually'}): "
+                            "confirm each was read, or record candidate-specific evidence")
     manual_list = []
     for n in tri.get("new_findings") or []:
         loc_line = int(n.get("line", 1) or 1)
@@ -436,6 +515,57 @@ def main():
     confirmed = [f for f in findings if f["decision"] == "confirmed"]
     unconfirmed = [f for f in findings if f["decision"] == "needs_review"]
     fid = {f["id"] for f in findings}
+    unconfirmed_ids = {f["id"] for f in unconfirmed}
+    via_counts = {k: sum(1 for c in cand_log if c["decided_by"] == k) for k in ("explicit", "bulk", "suppression", "none")}
+    ch_log = [c for c in cand_log if c["severity"] in ("Critical", "High")]
+    ch_bulk = [c for c in ch_log if c["decided_by"] == "bulk"]
+    ch_bulk_kinds = {k: sum(1 for c in ch_bulk if c["decision"] == k) for k in ("needs_review", "consolidated", "false_positive", "confirmed")}
+    if len(ch_bulk) >= 20 and len(ch_bulk) * 2 >= len(ch_log):
+        warnings.append(f"{len(ch_bulk)} of {len(ch_log)} Critical/High candidates were dispositioned by bulk rules rather than one by one")
+    prev = None
+    if a.previous_triage:
+        try:
+            ps = a.previous_scan or os.path.join(os.path.dirname(os.path.abspath(a.previous_triage)), "scan.json")
+            with open(a.previous_triage, encoding="utf-8") as fh:
+                ptri = json.load(fh)
+            with open(ps, encoding="utf-8") as fh:
+                pscan = json.load(fh)
+            pc = previous_confirmed(ptri, pscan)
+            cur_conf = [f for f in findings if f["decision"] == "confirmed"]
+            state_by_fp = {c.get("fingerprint"): c for c in cand_log if c.get("fingerprint")}
+            state_by_rf = {(c["rule"], c["file"]): c for c in cand_log}
+            carried, dropped = [], []
+            for p in pc:
+                hit = None
+                if p["kind"] == "scanner":
+                    hit = next((f for f in cur_conf if f.get("fingerprint") and f["fingerprint"] == p["fp"]), None)
+                else:
+                    hit = next((f for f in cur_conf if f.get("_mkey") == p["key"] or norm_ws(f["title"]).lower() == norm_ws(p["title"]).lower()), None)
+                if hit is None and p["file"]:                 # reworded or re-homed: same file and weakness class
+                    hit = next((f for f in cur_conf if f["file"] == p["file"] and p["cwe"] and f.get("cwe") == p["cwe"]), None)
+                if hit is not None:
+                    carried.append((p, hit))
+                    continue
+                st = state_by_fp.get(p.get("fp")) or state_by_rf.get((p.get("rule"), p["file"])) if p["kind"] == "scanner" else None
+                if st is not None:
+                    why = {"needs_review": "now an unconfirmed candidate", "false_positive": "now rejected as a false positive", "consolidated": "now consolidated into " + str(into.get(st["id"], "another finding")),
+                           "accepted_risk": "now an accepted risk"}.get(st["decision"], "now " + st["decision"])
+                    why += f" ({st['id']}" + (f": {reasons.get(st['id'], '')[:110]}" if reasons.get(st["id"]) else "") + ")"
+                elif p["kind"] == "scanner":
+                    why = "no longer detected in this scan (fixed, moved, excluded, or the rule changed)"
+                else:
+                    why = "not re-raised: no finding in this review matches it"
+                dropped.append((p, why))
+            prev = dict(path=os.path.basename(os.path.dirname(os.path.abspath(a.previous_triage))) or a.previous_triage, at=(pscan.get("meta") or {}).get("scanned_at", ""),
+                        total=len(pc), carried=carried, dropped=dropped)
+            if dropped:
+                warnings.append(f"{len(dropped)} of {len(pc)} findings confirmed in the previous review are not confirmed in this one (see Section 3.5)")
+        except (OSError, ValueError, KeyError) as e:
+            errors.append(f"--previous-triage could not be used: {e}")
+    consolidated_into_unconfirmed = [f_ for f_, _r, d_ in rejected if d_ == "consolidated" and into.get(f_["id"]) in unconfirmed_ids]
+    for f_, _r, d_ in rejected:
+        if d_ == "consolidated" and into.get(f_["id"]) and into[f_["id"]] not in fid and not str(into[f_["id"]]).startswith("FND-M"):
+            warnings.append(f"{f_['id']} is consolidated into {into[f_['id']]}, which is not a finding in this report")
 
     # ---------------- independent verification of Critical/High findings
     out_dir_guess = a.out or os.path.dirname(os.path.abspath(a.scan))
@@ -492,14 +622,14 @@ def main():
             vstat[verdict] += 1
 
     if a.packets:
-        if not a.repo or not os.path.isdir(a.repo):
-            sys.exit("error: --packets needs --repo <path to the audited repository>")
+        if not repos_ok:
+            sys.exit("error: --packets needs --repo <path to the audited repository> (repeat it for a multi-repository scan)")
         if errors:
             print("Cannot build packets, fix triage.json:", file=sys.stderr)
             for e in errors:
                 print("  - " + e, file=sys.stderr)
             sys.exit(2)
-        write_packets(a.packets, a.repo, crit_high, scan)
+        write_packets(a.packets, repos_ok, crit_high, scan)
         return
 
     # ---------------- checklist: apply triage
@@ -614,7 +744,7 @@ def main():
         ["Report ID", rid],
         ["Customer", meta.get("customer", "—")],
         ["Application", f"{app} ({meta.get('repository', '')})"],
-        ["Source revision", f"{git.get('branch', '—')} @ {git.get('commit', '—')}" if git.get("commit") else "Not under git / unknown"],
+        ["Source revision", source_revision(meta, git)],
         ["Assessment type", "Static source-code security analysis (SAST, secrets, dependencies, IaC); no live testing"],
         ["Assessment date", now.strftime("%Y-%m-%d %H:%M %Z")],
         ["Prepared by", meta.get("assessor", "appsec-static-audit (automated scan with manual code review)")],
@@ -769,6 +899,16 @@ def main():
         if gone:
             w("\n**No longer detected**\n")
             w(table(["Previous ID", "Severity", "Issue", "File"], [[g["id"], g["severity"], g["title"], f"`{g['file']}`"] for g in gone[:40]]) + (f"\n\n…and {len(gone) - 40} more." if len(gone) > 40 else ""))
+
+    if prev:
+        w("\n### 3.5 Comparison with the Previous Review\n")
+        w(f"The previous review (scan of {prev['at'] or 'unknown date'}) confirmed **{prev['total']}** finding(s). In this review **{len(prev['carried'])}** are confirmed again"
+          + (f" and **{len(prev['dropped'])}** are not. " if prev["dropped"] else ". ")
+          + ("A finding that is not confirmed here may have been fixed, may have been judged a false positive on a second reading, or may simply not have been re-reviewed; "
+             "the *Status now* column says which. Confirm each one before closing it.\n" if prev["dropped"] else "Nothing confirmed earlier has been dropped.\n"))
+        if prev["dropped"]:
+            w(table(["Previous ID", "Severity", "Previously confirmed finding", "Location", "Status now"],
+                    [[p["id"] or "manual", p["severity"], p["title"], f"`{p['file']}:{p['line']}`", why] for p, why in sorted(prev["dropped"], key=lambda x: SEV.index(x[0]["severity"]) if x[0]["severity"] in SEV else 9)]))
 
     # ================= 4 CHECKLIST
     w("\n---\n\n## 4. Security Control Checklist by Domain\n")
@@ -930,7 +1070,7 @@ def main():
     rows_a = [
         ["Scanner", f"{scan['meta']['tool']} {scan['meta']['version']} (offline; no network calls)"],
         ["Scanner build fingerprint", f"`{run['scanner_sha256'][:16]}` (SHA-256 of scripts and reference data; identical value = identical rules)" if run.get("scanner_sha256") else "not recorded"],
-        ["Repository revision", (f"`{git['commit_full']}`" + (" (working tree had uncommitted changes to tracked files)" if git.get("dirty") else " (clean)")) if git.get("commit_full") else "not under git"],
+        ["Repository revision" if not meta.get("repositories") else "Repository revisions", repository_revisions(meta, git)],
         ["Scan time", f"{scan['meta']['scanned_at']} ({scan['meta'].get('duration_s', '?')}s" + (f", {run['jobs']} worker processes" if run.get("jobs", 1) > 1 else "") + ")"],
         ["Files analysed", f"{inv['files_scanned']:,} ({inv['lines']:,} lines) in {len(comps)} component(s)"],
         ["Excluded paths", ", ".join(f"`{x}`" for x in opts.get("excludes", [])) or "none"],
@@ -940,7 +1080,10 @@ def main():
         ["Imported results", f"{scan.get('sarif_imported', 0)} SARIF result(s)" + ("; OSV scan merged" if (scan.get("dependencies") or {}).get("imported_osv") else "")],
         ["Suppression policy", f"{scan.get('suppression', {}).get('applied', 0)} applied, {scan.get('suppression', {}).get('expired', 0)} expired" if scan.get("suppression", {}).get("files") else "none"],
         ["Candidates raised / confirmed / rejected / accepted risk / unconfirmed", f"{len(scan['findings'])} / {len(confirmed) - n_manual} / {len(rejected)} / {len(accepted)} / {len(unconfirmed)}"],
+        ["Candidates dispositioned individually / by bulk rule / by suppression policy", f"{via_counts['explicit']} / {via_counts['bulk']} / {via_counts['suppression']}"],
         ["Manually added findings", str(n_manual)]]
+    if prev:
+        rows_a.append(["Compared with previous review", f"{prev['total']} previously confirmed: {len(prev['carried'])} confirmed again, {len(prev['dropped'])} not (Section 3.5)"])
     w(table(["Item", "Detail"], rows_a))
     if comps:
         w("\n### A.2 Coverage by Component\n")
@@ -958,6 +1101,15 @@ def main():
         n_c = sum(1 for _f, _r, d_ in rejected if d_ == "consolidated")
         w(f"{len(rejected)} candidate(s) were not carried into Section 5: {len(rejected) - n_c} incorrect or inapplicable pattern match(es) and {n_c} valid observation(s) consolidated into another finding. "
           "A consolidation is not a claim that the weakness is absent.\n")
+    notes_b = []
+    if ch_bulk:
+        notes_b.append(f"{len(ch_bulk)} of {len(ch_log)} Critical/High candidates were dispositioned by bulk rules, not individually "
+                       f"({ch_bulk_kinds['needs_review']} left unconfirmed, {ch_bulk_kinds['consolidated']} consolidated, {ch_bulk_kinds['false_positive']} rejected as false positives); "
+                       "each bulk rule carries one shared reason, so spot-check them before relying on these rejections")
+    if consolidated_into_unconfirmed:
+        notes_b.append(f"{len(consolidated_into_unconfirmed)} candidates were consolidated into findings that are themselves unconfirmed; a consolidation groups leads, it does not confirm them")
+    if notes_b:
+        w("\n**Review note.** " + ". ".join(notes_b) + ".\n")
     if shared_reasons:
         w("\n**Review note.** " + "; ".join(f"{n_} candidates share the identical recorded reason \"{k[:80]}…\"" for _f, n_, k in shared_reasons) +
           ". Identical wording is acceptable for a deliberate bulk rule, but confirm each candidate was read individually before relying on these rejections.\n")

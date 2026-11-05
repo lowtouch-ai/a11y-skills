@@ -358,6 +358,61 @@ def test_history_scan_ignores_docs_and_interpolation_and_downgrades_tests():
     assert hist["tests/fixture.py"]["severity"] == "High", "a key in test code is reported one level lower"
 
 
+def test_requirements_files_are_found_under_any_naming_convention():
+    files = {"svc/ailab_requirements.txt": "pyyaml==5.3\n", "svc/requirements/base.txt": "jinja2==2.10\n", "tools/constraints.txt": "pillow==8.0.0\n",
+             "web/dev-requirements.in": "flask\nrequests\n", "docs/requirements.md": "pyyaml==5.3\n"}
+    s = scan(files)
+    dep1 = {f["file"] for f in s["findings"] if f["rule"] == "DEP-1"}
+    assert {"svc/ailab_requirements.txt", "svc/requirements/base.txt", "tools/constraints.txt"} <= dep1, dep1
+    assert "docs/requirements.md" not in dep1
+    assert not any(f["rule"] == "DEP-3" and f["file"].endswith(".in") for f in s["findings"]), "pip-tools .in inputs are unpinned by design"
+    assert s["dependencies"]["ecosystems"]["pypi"]["total"] >= 4
+
+
+def test_api3_evidence_is_the_route_line():
+    s = scan({"a.py": 'from fastapi import APIRouter\nr = APIRouter()\n\n@r.get("/tickets/{tid}")\ndef t(tid: str):\n    return tid\n'})
+    f = next(x for x in s["findings"] if x["rule"] == "API-3")
+    assert f["locations"][0]["snippet"] == '@r.get("/tickets/{tid}")' and f["locations"][0]["line"] == 4
+
+
+def test_dependency_evidence_cites_pom_and_lockfile_lines():
+    pom = ('<project>\n  <dependencies>\n    <dependency>\n      <groupId>org.apache.logging.log4j</groupId>\n'
+           '      <artifactId>log4j-core</artifactId>\n      <version>2.14.1</version>\n    </dependency>\n  </dependencies>\n</project>\n')
+    lock = {"lockfileVersion": 3, "packages": {"": {"dependencies": {"jsonwebtoken": "^8.5.1"}}, "node_modules/jsonwebtoken": {"version": "8.5.1", "resolved": "https://registry.npmjs.org/x.tgz", "integrity": "sha512-x"}}}
+    s = scan({"pom.xml": pom, "package.json": json.dumps({"dependencies": {"jsonwebtoken": "^8.5.1"}}), "package-lock.json": json.dumps(lock, indent=2)})
+    p = next(f for f in s["findings"] if f["rule"] == "DEP-1" and "log4j" in f["title"])
+    assert p["locations"][0]["line"] == 5 and p["locations"][0]["snippet"] == "<artifactId>log4j-core</artifactId>", p["locations"]
+    j = next(f for f in s["findings"] if f["rule"] == "DEP-1" and "jsonwebtoken" in f["title"])
+    assert j["locations"][0]["line"] > 1 and "node_modules/jsonwebtoken" in j["locations"][0]["snippet"], j["locations"]
+
+
+def test_typosquat_heuristic_spares_version_suffixes_and_known_lookalikes():
+    s = scan({"requirements.txt": "markdown2==2.4.0\npsycopg2==2.9.9\nreqeusts==2.0.0\n"})
+    names = " ".join(f["title"] for f in s["findings"] if f["rule"] == "DEP-5")
+    assert "reqeusts" in names and "markdown2" not in names and "psycopg2" not in names
+
+
+def test_history_findings_cite_real_lines_and_say_where_the_value_is():
+    with tempfile.TemporaryDirectory(prefix="appsec-hist2-") as tmp:
+        repo, out = os.path.join(tmp, "repo"), os.path.join(tmp, "out")
+        key1, key2 = "sk_live_" + "a1B2c3D4e5F6g7H8i9J0k1L2", "sk_live_" + "Q9w8E7r6T5y4U3i2O1p0A9s8"
+
+        def git(*a):
+            subprocess.run(["git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", *a], check=True, capture_output=True)
+        write_files(repo, {"kept.py": "import os\n\n\nSTRIPE = \"%s\"\n" % key1, "moved.py": "A = 1\nB = 2\nKEY = \"%s\"\n" % key2})
+        git("init", "-q")
+        git("add", "-A")
+        git("commit", "-qm", "add")
+        git("mv", "moved.py", "renamed.py")
+        git("commit", "-qm", "rename")
+        subprocess.run([sys.executable, "-I", AUDIT, repo, "--out", out], check=True, capture_output=True)
+        s = json.load(open(os.path.join(out, "scan.json")))
+    hist = {f["file"]: f for f in s["findings"] if f["rule"] == "SEC-HIST-1"}
+    assert hist["kept.py"]["line"] == 4 and "still present in this file" in hist["kept.py"]["detail"], hist["kept.py"]
+    assert "moved.py" in hist and hist["moved.py"]["line"] == 1
+    assert "no longer exists, but the same value is still present elsewhere" in hist["moved.py"]["detail"], hist["moved.py"]["detail"]
+
+
 def write_files(repo, files):
     for rel, content in files.items():
         p = os.path.join(repo, rel)

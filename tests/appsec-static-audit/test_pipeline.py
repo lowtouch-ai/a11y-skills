@@ -338,6 +338,131 @@ def test_api3_and_flow_findings_appear_in_a_rendered_report_with_real_evidence()
         assert "pyyaml==5.3" in md and "Data flow: untrusted input from route parameter `u`" in md
 
 
+def test_bulk_dispositions_are_disclosed_and_repeated_bulk_reasons_flagged():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, out = os.path.join(tmp, "repo"), os.path.join(tmp, "out")
+        write(repo, {f"svc/m{i:02d}.py": VULN_A for i in range(26)})
+        s = audit(repo, out)
+        sql = [f for f in s["findings"] if f["rule"] == "INJ-SQL-1"]
+        assert len(sql) == 26
+        same = "Related lead; evidence kept in scan.json."
+        bulk = [{"rule": "INJ-SQL-1", "file_regex": f"m{i:02d}\\.py$", "decision": "needs_review", "reason": same} for i in range(26)]
+        bulk += [{"rule": "*", "decision": "confirmed", "reason": "t"}]
+        tri = triage_all_confirmed(os.path.join(tmp, "t.json"))
+        td = json.load(open(tri))
+        td["bulk"] = bulk
+        json.dump(td, open(tri, "w"))
+        r, md = render(out, tri)
+        assert "Critical/High candidates were dispositioned by bulk rules rather than one by one" in r.stderr
+        assert "rejected with the identical reason" not in r.stderr, "unconfirmed (not rejected) leads are not 'rejections'"
+        assert "| Candidates dispositioned individually / by bulk rule / by suppression policy | 0 / " in md
+        assert "dispositioned by bulk rules, not individually" in md and "**Review note.**" in md
+        # the same sentence used to REJECT 26 candidates through bulk rules is called out
+        bulk2 = [{"rule": "INJ-SQL-1", "file_regex": f"m{i:02d}\\.py$", "decision": "false_positive", "reason": same} for i in range(26)] + [{"rule": "*", "decision": "confirmed", "reason": "t"}]
+        td["bulk"] = bulk2
+        json.dump(td, open(tri, "w"))
+        r2, md2 = render(out, tri)
+        assert "rejected with the identical reason" in r2.stderr and "by bulk rules" in r2.stderr
+
+
+def test_consolidation_into_an_unconfirmed_finding_is_noted():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, out = os.path.join(tmp, "repo"), os.path.join(tmp, "out")
+        write(repo, {"a.py": VULN_A, "b.py": VULN_A.replace("def a", "def b")})
+        s = audit(repo, out)
+        sql = sorted((f for f in s["findings"] if f["rule"] == "INJ-SQL-1"), key=lambda f: f["file"])
+        decisions = {sql[0]["id"]: {"decision": "needs_review"}, sql[1]["id"]: {"decision": "consolidated", "into": sql[0]["id"], "reason": "same root cause"}}
+        tri = triage_all_confirmed(os.path.join(tmp, "t.json"), {"decisions": decisions})
+        _, md = render(out, tri)
+        assert "consolidated into findings that are themselves unconfirmed" in md
+
+
+def test_previous_triage_lists_what_was_confirmed_before_and_is_not_now():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, out = os.path.join(tmp, "repo"), os.path.join(tmp, "out")
+        prev_dir = os.path.join(tmp, "prev")
+        write(repo, {"a.py": VULN_A, "b.py": VULN_B, "c.py": 'import yaml\nfrom flask import request\ndef c():\n    return yaml.load(request.data)\n'})
+        s1 = audit(repo, out)
+        manual = [{"title": "Export skips the ownership check", "domain": "access", "severity": "High", "cwe": "CWE-639", "file": "a.py", "line": 3, "fix": "f"}]
+        t1 = triage_all_confirmed(os.path.join(tmp, "t1.json"), {"new_findings": manual})
+        render(out, t1)
+        os.makedirs(prev_dir)
+        for f in ("scan.json", "finding-ids.json"):
+            open(os.path.join(prev_dir, f), "w").write(open(os.path.join(out, f)).read())
+        open(os.path.join(prev_dir, "triage.json"), "w").write(open(t1).read())
+        # second review: b.py is fixed, the yaml finding is now judged a false positive, the manual finding is not re-raised
+        write(repo, {"b.py": "x = 1\n"})
+        s2 = audit(repo, out, "--previous", "none")
+        yaml_id = next(f["id"] for f in s2["findings"] if f["rule"] == "DESER-2")
+        t2 = triage_all_confirmed(os.path.join(tmp, "t2.json"), {"decisions": {yaml_id: {"decision": "false_positive", "reason": "input is a constant"}}})
+        r, md = render(out, t2, "--previous-triage", os.path.join(prev_dir, "triage.json"))
+        assert "### 3.5 Comparison with the Previous Review" in md
+        sec = md[md.index("### 3.5"):md.index("## 4. Security Control Checklist")]
+        assert "now rejected as a false positive" in sec and "no longer detected in this scan" in sec and "not re-raised" in sec, sec
+        assert "Export skips the ownership check" in sec and "Compared with previous review" in md
+        assert "findings confirmed in the previous review are not confirmed in this one" in r.stderr
+        # nothing dropped when the same findings are confirmed again
+        t3 = triage_all_confirmed(os.path.join(tmp, "t3.json"))
+        r3, md3 = render(out, t3, "--previous-triage", os.path.join(prev_dir, "triage.json"), "--previous-scan", os.path.join(prev_dir, "scan.json"))
+        assert "### 3.5" in md3
+
+
+def _git_repo(path, files):
+    write(path, files)
+    for cmd in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "init"]):
+        subprocess.run(["git", "-C", path, "-c", "user.email=t@t", "-c", "user.name=t", *cmd], check=True, capture_output=True)
+    return subprocess.run(["git", "-C", path, "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def test_multi_repository_workspace_scan():
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, "out")
+        alpha, beta = os.path.join(tmp, "alpha"), os.path.join(tmp, "beta")
+        sha_a = _git_repo(alpha, {"app/a.py": "".join(f"# filler {i}\n" for i in range(25)) + VULN_A, "requirements.txt": "pyyaml==5.3\n",
+                                  "svc/api.py": 'from fastapi import APIRouter\nr = APIRouter()\n@r.get("/items")\ndef items():\n    return []\n'})
+        sha_b = _git_repo(beta, {"b.py": VULN_B, "requirements.txt": "pyyaml==5.3\n", "docker-compose.yml": 'services:\n  r:\n    image: redis\n    ports:\n      - "6379:6379"\n'})
+        py(AUDIT, alpha, beta, "--out", out, "--no-git-history", "--name", "Two repo workspace")
+        s = json.load(open(os.path.join(out, "scan.json")))
+        files = {f["file"] for f in s["findings"]}
+        assert any(f.startswith("alpha/") for f in files) and any(f.startswith("beta/") for f in files) and not any(f.startswith(("app/", "svc/")) for f in files), files
+        # the same vulnerable dependency in both repositories is reported once per repository
+        dep1 = sorted(f["file"] for f in s["findings"] if f["rule"] == "DEP-1")
+        assert dep1 == ["alpha/requirements.txt", "beta/requirements.txt"], dep1
+        assert s["meta"]["git"] == {} and set(s["meta"]["repositories"]) == {"alpha", "beta"}
+        assert s["meta"]["repositories"]["alpha"]["commit_full"] == sha_a and s["meta"]["repositories"]["beta"]["commit_full"] == sha_b
+        assert s["meta"]["repository"].startswith("2 repositories") and s["limitations"][0].startswith("Workspace scan of 2 repositories")
+        comps = {c["component"] for c in s["components"]}
+        assert {"alpha/app", "alpha/svc", "beta/(repository root)"} <= comps, comps
+        assert all(r["file"].startswith("alpha/") for r in s["routes"]) and s["routes"]
+        api3 = next(f for f in s["findings"] if f["rule"] == "API-3")
+        assert api3["file"] == "alpha/svc/api.py" and api3["locations"][0]["snippet"] == '@r.get("/items")'
+        assert next(f for f in s["findings"] if f["rule"] == "DKR-4")["file"] == "beta/docker-compose.yml"
+        sbom = json.load(open(os.path.join(out, "sbom.cdx.json")))
+        yml = [c for c in sbom["components"] if c["name"] == "pyyaml"]
+        assert len(yml) == 1 and [p["value"] for p in yml[0]["properties"] if p["name"] == "source"] == ["beta/requirements.txt", "alpha/requirements.txt"] or len(yml[0]["properties"]) >= 2
+        # IDs are stable on a re-scan of the same workspace
+        ids1 = {(f["rule"], f["file"]): f["id"] for f in s["findings"]}
+        s2 = audit_multi(out, [alpha, beta])
+        assert {(f["rule"], f["file"]): f["id"] for f in s2["findings"]} == ids1
+        assert s2["changes"] and s2["changes"]["new"] == 0
+        # render: both revisions are shown, and manual citations resolve through the repository prefix
+        nf = [{"title": "Handler reads input", "domain": "owasp", "severity": "High", "cwe": "CWE-89", "file": "alpha/app/a.py", "line": 1,
+               "evidence": 'cur.execute("SELECT * FROM t WHERE id=" + request.args["id"])', "fix": "f"}]
+        tri = triage_all_confirmed(os.path.join(tmp, "t.json"), {"new_findings": nf})
+        r, md = render(out, tri, "--repo", alpha, "--repo", beta)
+        assert f"alpha: " in md and sha_a in md and sha_b in md and "| Repository revisions |" in md
+        assert "cited line 1 but the quoted evidence is at line 28; corrected" in r.stderr
+        assert "Source revision | alpha:" in md
+        # inputs must be bound to a repository when there are several
+        bad = py(AUDIT, alpha, beta, "--out", out, "--no-git-history", "--sarif", os.path.join(tmp, "x.sarif"), ok=False)
+        assert bad.returncode != 0 and "NAME=FILE" in (bad.stderr + bad.stdout)
+
+
+def audit_multi(out, repos, *extra):
+    py(AUDIT, *repos, "--out", out, "--no-git-history", *extra)
+    return json.load(open(os.path.join(out, "scan.json")))
+
+
 if __name__ == "__main__":
     bad = 0
     for name, fn in sorted(globals().items()):
