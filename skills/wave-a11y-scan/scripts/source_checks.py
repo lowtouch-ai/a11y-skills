@@ -60,10 +60,15 @@ def info(el, skip_img=False):
             if isinstance(c, str):
                 text.append(c)
                 continue
-            if c.comp or c.spread or c.dyn:
+            if (c.comp and not c.icon) or c.spread or c.dyn:
                 unk = True
             if c.tag in ("script", "style"):
                 continue
+            if not skip_img:
+                for k in ("aria-label", "title") if c.icon else ("aria-label",):
+                    v = c.attrs.get(k)
+                    if v is not None and v.strip() and k == "aria-label" or (v and k == "title" and c.icon):
+                        text.append(v if DYN not in v else "x")
             if c.tag == "img" or (c.tag == "input" and static(c.attrs.get("type")) == "image"):
                 alt = c.attrs.get("alt")
                 if alt is not None and DYN in alt:
@@ -89,6 +94,9 @@ def name_state(el):
     t, unk = info(el)
     if t:
         return "named"
+    ti = el.attrs.get("title")
+    if ti is not None and (DYN in ti or ti.strip()):
+        return "named"                          # title is the last-resort accessible name
     return "unknown" if unk else "empty"
 
 
@@ -376,7 +384,7 @@ def check_file(root, styles_pool, ext, is_html_like, project, display_text=""):
             add("error", "th_empty", th)
 
     # ---------- attributes and embedded media
-    for e in els:
+    for e in (x for x in els if not x.comp):      # custom components may not pass these props to the DOM
         if "accesskey" in e.attrs:
             add("alert", "accesskey", e)
         if "tabindex" in e.attrs:

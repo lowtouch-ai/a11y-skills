@@ -33,10 +33,11 @@ Exit codes: `0` ok (findings do not change it); `2` bad option; `3` a path does 
 
 ## How source scanning behaves
 
-- A value that is only known at runtime (`alt={desc}`, `:alt="x"`, `<?= $x ?>`, `{{ x }}`, spread props) is treated as present and is never reported. Elements rendered by components defined elsewhere are treated as unknown content.
+- A value that is only known at runtime (`alt={desc}`, `:alt="x"`, `<?= $x ?>`, `{{ x }}`, spread props) is treated as present and is never reported. Elements rendered by components defined elsewhere are treated as unknown content, except icon components imported from icon libraries (lucide-react, react-icons, heroicons, MUI icons, Font Awesome and similar), which count as a glyph with no text. An icon-only button or link with no `aria-label`, `title` or text is reported as empty.
 - References by id (`for`, `aria-labelledby`, `#anchor`) are resolved across all scanned files. They are not reported when any element in the file has a dynamic id.
 - Document-level rules (`lang`, `<title>`, missing headings or landmarks) apply to files with a full `<html>` page. Single-page-app shells with an empty mount element are not reported for missing headings.
-- Contrast is computed from CSS in `<style>` blocks, linked and imported `.css` files, inline styles and CSS-in-JS object literals, with `var(--x)` resolved. Elements whose colors come from dynamic classes, utility frameworks (Tailwind palette), gradients, images or other files are counted as skipped in the report, not guessed.
+- Event-handler, `tabindex` and `accesskey` checks apply to native elements only, not custom components.
+- Contrast is computed from CSS in `<style>` blocks, linked and imported `.css` files, inline styles and CSS-in-JS object literals, with `var(--x)` resolved. Elements whose colors come from dynamic classes or utility classes such as `bg-primary` or `text-gray-500` (Tailwind palette and theme values are not resolved), gradients, images or other files are counted as skipped in the report, not guessed.
 
 ## Files
 

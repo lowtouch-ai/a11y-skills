@@ -22,13 +22,13 @@ TEMPLATE_RE = re.compile(r"<\?.*?\?>|<%.*?%>|\{\{.*?\}\}|\{%.*?%\}|\{#.*?#\}", r
 
 class El:
     __slots__ = ("tag", "attrs", "line", "parent", "children", "comp", "spread", "dyn", "depth", "raw", "classes", "id",
-                 "style_unknown", "_cs", "_fg", "_fs", "_fw", "_bg")
+                 "style_unknown", "icon", "_cs", "_fg", "_fs", "_fw", "_bg")
 
     def __init__(self, tag, attrs=None, line=0, parent=None, comp=False, spread=False, raw=""):
         self.tag, self.attrs, self.line, self.parent = tag, attrs or {}, line, parent
         self.children, self.comp, self.spread, self.raw = [], comp, spread, raw
         self.dyn, self.depth = False, 0
-        self.classes, self.id, self.style_unknown = set(), None, False
+        self.classes, self.id, self.style_unknown, self.icon = set(), None, False, False
         self._cs = self._fg = self._fs = self._fw = self._bg = None
 
     def els(self):
@@ -148,6 +148,27 @@ def _attr_value(t, p, name):
     return v, p + len(v)
 
 
+ICON_PKG = re.compile(r"lucide-react|react-icons(/\w+)?|@heroicons/react(/[\w/-]+)?|@mui/icons-material(/[\w]+)?|@fortawesome/[\w-]+|@phosphor-icons/react|@tabler/icons-react|react-feather|@radix-ui/react-icons|@ant-design/icons|lucide-vue-next|lucide-svelte")
+
+
+def icon_names(text):
+    """Local names of components imported from icon libraries: they draw a glyph and carry no text."""
+    names = set()
+    for m in re.finditer(r"import\s+([^;]*?)\s+from\s+['\"]([^'\"]+)['\"]", text):
+        if not ICON_PKG.fullmatch(m[2]):
+            continue
+        clause = m[1]
+        for part in re.findall(r"\{([^}]*)\}", clause):
+            for item in part.split(","):
+                item = item.strip()
+                if item:
+                    names.add(re.split(r"\s+as\s+", item)[-1].strip())
+        d = re.match(r"([A-Za-z_$][\w$]*)\s*(,|$)", clause)
+        if d:
+            names.add(d[1])
+    return names
+
+
 def _comp_info(raw_name, ext):
     """Returns (tag, is_component)."""
     brace = ext in BRACE_EXT or ext == ".vue"
@@ -174,6 +195,7 @@ def parse(text, ext):
         text = TEMPLATE_RE.sub(lambda m: DYN + "\n" * m[0].count("\n"), text)
     starts = [0] + [m.end() for m in re.finditer(r"\n", text)]
     line_of = lambda off: bisect.bisect_right(starts, off)
+    icons = icon_names(text) if ext in JS_EXT | {".vue", ".svelte", ".astro"} else set()
     root = El("#root")
     stack = [root]
     styles = []
@@ -291,6 +313,7 @@ def parse(text, ext):
         if tag == "a" and "href" not in attrs and "to" in attrs and raw_name != "a":
             attrs["href"] = attrs["to"]
         el = El(tag, attrs, line_of(i), None, comp, spread, re.sub(r"\s+", " ", text[i:p])[:160])
+        el.icon = comp and raw_name in icons
         if "id" in attrs and DYN not in attrs["id"]:
             el.id = attrs["id"].strip() or None
         cls = attrs.get("class")

@@ -34,11 +34,18 @@ for f, rules in expect.items():
     miss = rules - by_file.get(f, set())
     if miss:
         problems.append(f"{f}: missing {sorted(miss)}")
-# values only known at runtime must never be reported: violations.jsx line 11 is <img src={src} alt={desc}>
+jsx = [(c, rid, i["line"]) for c, cat in res.items() for rid, inst in cat.items() for i in inst if i["file"] == "violations.jsx"]
+if sum(1 for c, rid, ln in jsx if rid == "button_empty") != 2:
+    problems.append("violations.jsx: expected 2 empty buttons (the icon-only <X/> button, and the empty <button>), not the one with a title")
+if any(i["file"] == "violations.jsx" and "bg-primary" in (i["html"] or "") for i in res.get("contrast", {}).get("contrast", [])):
+    problems.append("violations.jsx: a Tailwind bg-primary button must not be reported for contrast")
+if any(rid == "event_handler" for c, rid, ln in jsx):
+    problems.append("violations.jsx: a custom <Button> component must not get event_handler")
+# values only known at runtime must never be reported: violations.jsx line 13 is <img src={src} alt={desc}>
 for cat in ("error", "alert", "contrast"):
     for inst in res.get(cat, {}).values():
-        if any(i["file"] == "violations.jsx" and i["line"] == 11 for i in inst):
-            problems.append("violations.jsx:11 has a runtime alt and must not be reported")
+        if any(i["file"] == "violations.jsx" and i["line"] == 13 for i in inst):
+            problems.append("violations.jsx:13 has a runtime alt and must not be reported")
 print("OK" if not problems else "PROBLEMS: " + "; ".join(problems))
 
 # error handling: readable failures, bad options rejected

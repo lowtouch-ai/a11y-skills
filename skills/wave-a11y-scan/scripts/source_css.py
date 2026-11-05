@@ -210,11 +210,30 @@ def _tailwind(classes):
             d.append(("text-decoration", "underline", False))
         elif c == "hidden":
             d.append(("display", "none", False))
+        elif c == "bg-transparent":
+            d.append(("background-color", "transparent", False))
         elif c == "font-bold":
             d.append(("font-weight", "700", False))
         elif c == "text-justify":
             d.append(("text-align", "justify", False))
     return d
+
+
+BG_NOT_COLOR = re.compile(r"bg-(clip|origin|blend|opacity|cover|contain|center|top|bottom|left|right|fixed|local|scroll|repeat|no-repeat|auto|none|size|position)\b")
+TEXT_NOT_COLOR = re.compile(r"text-(xs|sm|base|lg|[2-9]?xl|left|center|right|justify|start|end|wrap|nowrap|balance|pretty|ellipsis|clip|opacity|\[\d+(\.\d+)?(px|rem|em)\])$")
+RESOLVED_UTIL = {"bg-white", "bg-black", "bg-transparent", "text-white", "text-black"}
+
+
+def utility_unknown(el, kind):
+    """True when a utility class (Tailwind and similar) sets the colour but its value is not in the source."""
+    for c in el.classes:
+        if ":" in c or c in RESOLVED_UTIL or re.fullmatch(r"(text|bg)-\[(#[0-9a-fA-F]{3,8}|rgba?\([^)]*\))\]", c):
+            continue
+        if kind == "bg" and c.startswith("bg-") and not BG_NOT_COLOR.match(c):
+            return True
+        if kind == "fg" and c.startswith("text-") and not TEXT_NOT_COLOR.match(c):
+            return True
+    return False
 
 
 class Styler:
@@ -324,7 +343,9 @@ class Styler:
         p = self.parent(el)
         up = self.fg(p) if p is not None else None
         v = self.cs(el).get("color")
-        if v is None or v.lower() in ("inherit", "unset"):
+        if utility_unknown(el, "fg"):
+            r = UNK
+        elif v is None or v.lower() in ("inherit", "unset"):
             r = up
         else:
             r = parse_color(v)
@@ -335,7 +356,7 @@ class Styler:
         """Effective opaque background (r, g, b), or UNK when it cannot be known from source."""
         stack, n = [], el
         while n is not None:
-            if n.style_unknown:
+            if n.style_unknown or utility_unknown(n, "bg"):
                 return UNK
             d = self.cs(n)
             if d.get("background-image", "none").lower() not in ("none", "initial"):

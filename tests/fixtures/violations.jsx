@@ -1,5 +1,7 @@
 import React from "react";
 import "./theme.css";
+import { X } from "lucide-react";
+import Button from "./Button";
 
 export default function Page({ items, id, label }) {
   return (
@@ -20,6 +22,10 @@ export default function Page({ items, id, label }) {
       <p style={{ fontSize: 9 }}>Tiny</p>
       <ul>{items.map((i) => (<li key={i}><a href={`/i/${i}`}>{i}</a></li>))}</ul>
       <div role="button" aria-labelledby="gone" tabIndex={3}>x</div>
+      <button type="button" onClick={close}><X size={16} /></button>
+      <button type="button" title="Close"><X /></button>
+      <button className="bg-primary text-white">Save</button>
+      <Button onMouseDown={stop} onClick={go}>Go</Button>
       const x: Array<string> = [];
     </main>
   );
