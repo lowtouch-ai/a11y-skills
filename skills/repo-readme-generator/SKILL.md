@@ -18,7 +18,8 @@ Produces consistent, architecture-focused documentation grounded in what the rep
 4. **Honest verification.** Report which checks you ran and which you did not. Commands taken from manifests but not executed are "documented from <file>, not executed".
 5. **No secrets.** Variable names, descriptions and placeholder defaults only; never real values, and never copy credentials found in samples (name the file instead).
 6. **README and AGENTS.md are always deliverables in suite scope.** A suite run is not finished until `README.md` and `AGENTS.md` have been rewritten or updated to match the final documents, even when a README already exists and looks fine. Never stop after writing `docs/`.
-7. **Preserve what is right.** In update mode keep accurate existing text and the author's voice; change only what is stale, missing or wrong. Preserve existing `AGENTS.md` rules.
+7. **Exact filename.** The README must be written to a file named exactly `README.md` (uppercase `README`, lowercase `.md`) in the repository root, because GitHub only renders it on the repo page under that name. Never use `readme.md`, `Readme.md`, `README.txt`, `README-generated.md` or a path outside the root. If a differently named README exists, rename it to `README.md` (e.g. `git mv`) instead of creating a second file.
+8. **Preserve what is right.** In update mode keep accurate existing text and the author's voice; change only what is stale, missing or wrong. Preserve existing `AGENTS.md` rules.
 
 ## Choose scope and mode
 

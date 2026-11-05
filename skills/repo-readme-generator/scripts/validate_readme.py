@@ -304,9 +304,13 @@ def main():
     if not rp.exists():
         print(f"README not found: {rp}", file=sys.stderr); return 2
     root = Path(a.root).resolve() if a.root else rp.parent
+    r = R()
+    if rp.name != "README.md":
+        r.add("ERROR", "filename", f"README must be named exactly README.md for GitHub to render it (found {rp.name})")
+    elif rp.parent != root:
+        r.add("WARN", "filename", "README.md is not in the repository root; GitHub shows only the root README on the repo page")
     md = rp.read_text(encoding="utf-8", errors="replace")
     heads, fences, prose = parse(md)
-    r = R()
     check_sections(heads, r)
     check_toc_and_anchors(md, heads, prose, r)
     check_links_and_paths(prose, root, rp.parent, r)
