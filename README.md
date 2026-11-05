@@ -105,7 +105,7 @@ Run these in Codex from the folder you want to audit (replace the paths and name
 $appsec-static-audit audit this repository for security
 ```
 
-Several repositories as one report (see "One repository or several" below):
+Several repositories as one report:
 
 ```
 $appsec-static-audit audit ../platform ../shared-libs ../installer as one workspace called "Acme Platform", exclude **/node_modules and **/target
@@ -116,17 +116,6 @@ Re-auditing the same code and proving nothing was lost:
 ```
 $appsec-static-audit re-audit this repository into ./security-audit-new and compare with the previous review in ./security-audit-old: list every finding confirmed before and not confirmed now, and why.
 ```
-
-### One repository or several
-
-```
-python3 ~/.codex/skills/appsec-static-audit/scripts/audit.py <repo> --out ./security-audit --name "App name"
-python3 ~/.codex/skills/appsec-static-audit/scripts/audit.py <repo-a> <repo-b> <repo-c> --out ./security-audit --name "Platform"
-```
-
-With several repositories every path in the report is prefixed with the repository folder name (`repo-a/src/app.py`), components are `repo-a/component`, dependency findings are raised per repository, the SBOM and counts are combined, and each repository's branch, full commit and dirty flag are recorded and shown in the report. Give `--sarif` and `--osv-results` as `NAME=FILE` so they are bound to the right repository, and pass `--repo` once per checkout when rendering so citations and verification packets can find the code.
-
-Useful options: `--exclude GLOB` (repeatable; applies inside each repository), `--jobs N` (parallel scanning, default up to 8), `--suppressions FILE`, `--previous scan.json`, `--no-git-history`, `--advisory-db FILE`. Scanning is parallel and deterministic; on a 2-million-line repository it takes a few minutes.
 
 ### What you get
 
