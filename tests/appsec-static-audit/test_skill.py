@@ -85,7 +85,7 @@ def main():
                                  "file": "app/views.py", "line": 12, "description": "Export route returns any case by ID.", "fix": "Filter by owner.",
                                  "evidence": 'headers = {"User-Agent": "Mozilla/5.0"}'}],
                "bulk": [{"rule": "MISC-PROMPT-1", "decision": "false_positive", "reason": "bulk rule test"},
-                                       {"rule": "ERR-2", "file_regex": "server\\.js$", "decision": "false_positive", "reason": "bulk file_regex test"}],
+                                       {"rule": "ERR-2", "file_regex": "(views\\.py|server\\.js)$", "decision": "false_positive", "reason": "bulk file_regex test"}],
                "checklist": {**checklist, first_hit["key"]: {"status": "Pass", "evidence": "x"}}}
         tri["meta"].update({"application_description": "a multi-service test appliance", "fti_in_scope": False,
                             "architecture_md": "```mermaid\nflowchart LR\n  A-->B\n```", "immediate_actions": ["Rotate the exposed credentials first."]})
