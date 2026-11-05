@@ -25,7 +25,7 @@ The skills in this repository are reusable building blocks for that kind of work
 |---|---|
 | [`repo-readme-generator`](#repo-readme-generator) | Creates or updates a repo's README, or a full documentation suite with `AGENTS.md` and diagrams, from verified evidence. |
 | [`appsec-static-audit`](#appsec-static-audit) | Source-code-only security audit of one repository or several (OWASP, SSO, secrets, dependencies and SBOM, IaC, CI/CD, PII/FTI) with a timestamped enterprise report, SARIF output and a CI gate, mapped to NIST 800-53, IRS Pub 1075 and EOTSS. |
-| [`wave-a11y-scan`](#wave-a11y-scan) | WAVE-style accessibility scan of web pages with a client-ready report (WCAG 2.x, Section 508 note). |
+| [`wave-a11y-scan`](#wave-a11y-scan) | WAVE-style accessibility scan of a project's source code with a client-ready report (WCAG 2.x, Section 508 note). |
 
 In Codex, install a skill with the command in its section, then restart Codex. Skills are installed as folders under `~/.codex/skills/` (or `$CODEX_HOME/skills/` if you set `CODEX_HOME`).
 
@@ -162,7 +162,7 @@ Files the skill wrote into your projects (`security-audit/`) are not removed wit
 
 ## wave-a11y-scan
 
-WAVE-style accessibility scan of web pages with a client-ready report (WCAG 2.x, Section 508 note). It installs its own dependencies (Playwright and Chromium, about 150 MB) the first time it runs. Automated checks do not prove a page is accessible; manual keyboard and screen-reader testing is still required. Details: [`SKILL.md`](skills/wave-a11y-scan/SKILL.md).
+WAVE-style accessibility scan of a project's source code (HTML, templates, JSX/TSX, Vue, Svelte, Astro) with a client-ready report (WCAG 2.x, Section 508 note). Findings carry file and line. It needs only Python 3; no browser or install. Automated checks do not prove code is accessible; manual keyboard and screen-reader testing is still required. Details: [`SKILL.md`](skills/wave-a11y-scan/SKILL.md).
 
 ### Install
 
@@ -175,7 +175,7 @@ $skill-installer install https://github.com/lowtouch-ai/krithi-skills/tree/main/
 Open Codex in the folder you want to work on and run:
 
 ```
-$wave-a11y-scan scan https://example.com
+$wave-a11y-scan scan this project
 ```
 
 ### Update
@@ -204,7 +204,7 @@ $skill-installer install https://github.com/lowtouch-ai/krithi-skills/tree/main/
 rm -rf ~/.codex/skills/wave-a11y-scan
 ```
 
-Files the skill wrote into your projects (`a11y-report/`) are not removed with the skill. It also leaves Playwright and its Chromium download in the pip and Playwright caches; remove them with `python3 -m pip uninstall playwright` and by deleting `~/.cache/ms-playwright`.
+Files the skill wrote into your projects (`a11y-report/`) are not removed with the skill.
 
 ## Uninstalling from inside Codex
 

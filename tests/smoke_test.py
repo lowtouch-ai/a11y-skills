@@ -1,41 +1,64 @@
 #!/usr/bin/env python3
-"""Scan the violations fixture and check the main rule families fire. Run: python tests/smoke_test.py"""
+"""Scan the source fixtures and check the main rule families fire, and that failures are readable. Run: python tests/smoke_test.py"""
 import json, subprocess, sys, tempfile
 from pathlib import Path
 
 root = Path(__file__).resolve().parent.parent
-fixture = (root / "tests" / "fixtures" / "violations.html").as_uri()
-out = Path(tempfile.mkdtemp())
-subprocess.run([sys.executable, str(root / "skills/wave-a11y-scan/scripts/scan.py"), fixture, "--out", str(out)], check=True)
-res = json.loads(next(out.glob("*.json")).read_text())["results"]
-found = {rid for cat in res.values() for rid in cat}
-expect = {"title_invalid", "language_missing", "alt_missing", "alt_suspicious", "link_suspicious", "link_empty", "button_empty",
-          "label_missing", "label_orphaned", "contrast", "text_small", "table_layout", "aria_reference_broken",
-          "heading_skipped", "region_missing", "link_internal_broken", "h1_missing"}
-missing = expect - found
-print("OK" if not missing else f"MISSING: {sorted(missing)}")
-
-# error handling: readable failures, partial results kept, bad options rejected
 scan = str(root / "skills/wave-a11y-scan/scripts/scan.py")
+fixtures = root / "tests" / "fixtures"
+out = Path(tempfile.mkdtemp())
+
+
 def sc(*args):
     return subprocess.run([sys.executable, scan, *args], capture_output=True, text=True)
+
+
 problems = []
-r = sc(fixture, "http://127.0.0.1:1/", "--out", str(out / "partial"), "--timeout", "5")
-rep = (out / "partial/report.md").read_text(encoding="utf-8") if (out / "partial/report.md").exists() else ""
-if r.returncode != 3 or "Pages that could not be scanned" not in rep or "Traceback" in r.stderr:
-    problems.append("a failing URL must not abort the run: expected exit 3 and a report listing the failed page")
-r = sc("http://127.0.0.1:1/", "--out", str(out / "none"), "--timeout", "5")
+r = sc(str(fixtures), "--out", str(out / "ok"))
+if r.returncode != 0:
+    problems.append(f"scan failed: {r.stderr[-300:]}")
+res = json.loads((out / "ok/results.json").read_text())["results"] if (out / "ok/results.json").exists() else {}
+by_file = {}
+for cat in res.values():
+    for rid, inst in cat.items():
+        for i in inst:
+            by_file.setdefault(i["file"], set()).add(rid)
+expect = {
+    "violations.html": {"title_invalid", "language_missing", "alt_missing", "alt_suspicious", "link_suspicious", "link_empty", "button_empty",
+                        "label_missing", "label_orphaned", "contrast", "text_small", "table_layout", "aria_reference_broken",
+                        "heading_skipped", "region_missing", "link_internal_broken", "h1_missing"},
+    "violations.jsx": {"alt_missing", "alt_suspicious", "link_empty", "link_suspicious", "button_empty", "label_missing", "contrast",
+                       "text_small", "heading_skipped", "tabindex"},
+}
+for f, rules in expect.items():
+    miss = rules - by_file.get(f, set())
+    if miss:
+        problems.append(f"{f}: missing {sorted(miss)}")
+jsx = [(c, rid, i["line"]) for c, cat in res.items() for rid, inst in cat.items() for i in inst if i["file"] == "violations.jsx"]
+if sum(1 for c, rid, ln in jsx if rid == "button_empty") != 2:
+    problems.append("violations.jsx: expected 2 empty buttons (the icon-only <X/> button, and the empty <button>), not the one with a title")
+if any(i["file"] == "violations.jsx" and "bg-primary" in (i["html"] or "") for i in res.get("contrast", {}).get("contrast", [])):
+    problems.append("violations.jsx: a Tailwind bg-primary button must not be reported for contrast")
+if any(rid == "event_handler" for c, rid, ln in jsx):
+    problems.append("violations.jsx: a custom <Button> component must not get event_handler")
+# values only known at runtime must never be reported: violations.jsx line 13 is <img src={src} alt={desc}>
+for cat in ("error", "alert", "contrast"):
+    for inst in res.get(cat, {}).values():
+        if any(i["file"] == "violations.jsx" and i["line"] == 13 for i in inst):
+            problems.append("violations.jsx:13 has a runtime alt and must not be reported")
+print("OK" if not problems else "PROBLEMS: " + "; ".join(problems))
+
+# error handling: readable failures, bad options rejected
+r = sc(str(out / "does-not-exist"))
+if r.returncode != 3 or "Traceback" in r.stderr:
+    problems.append("a missing path must exit 3 with a one-line message")
+empty = out / "empty"
+empty.mkdir()
+(empty / "a.txt").write_text("nothing")
+r = sc(str(empty), "--out", str(out / "none"))
 if r.returncode != 3 or "Traceback" in r.stderr or (out / "none/report.md").exists():
-    problems.append("when no page loads: exit 3, a one-line error, no report")
-if sc(fixture, "--format", "pdf").returncode != 2:
+    problems.append("when no markup is found: exit 3, a one-line message, no report")
+if sc(str(fixtures), "--format", "pdf").returncode != 2:
     problems.append("an unknown --format must be rejected")
-if sc(fixture, "--viewport", "big").returncode != 2:
-    problems.append("a malformed --viewport must be rejected")
-names = [p.name for p in (out / "partial").glob("*.json")]
-if any(len(n) > 90 for n in names):
-    problems.append("JSON file names must stay short")
-cmp_ = subprocess.run([sys.executable, str(root / "skills/wave-a11y-scan/scripts/compare.py"), "nope.json", "nope2.json"], capture_output=True, text=True)
-if "Traceback" in cmp_.stderr or cmp_.returncode == 0:
-    problems.append("compare.py must fail with a readable message on bad input")
-print("OK (error handling)" if not problems else "PROBLEMS: " + "; ".join(problems))
-sys.exit(1 if (missing or problems) else 0)
+print("OK (error handling)" if len(problems) == 0 else "PROBLEMS: " + "; ".join(problems))
+sys.exit(1 if problems else 0)
