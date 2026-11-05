@@ -53,6 +53,15 @@ Once chosen, state the scope in one line and offer the next tier up.
 
 Set `<skill-dir>` to the folder containing this file (usually `~/.codex/skills/repo-readme-generator`) and run scripts from the repository root.
 
+### 0. Confirm the branch
+Before changing any file, run `git rev-parse --abbrev-ref HEAD` (skip this step if the folder is not a git repository). Then ask, and wait for the answer:
+
+> You are on branch `<current_branch>`. Do you want to:
+> 1. **Continue** on `<current_branch>`, or
+> 2. **Create and check out** a new branch `<new_branch_name>` for the documentation changes?
+
+Suggest a name such as `docs/readme-update` (README scope) or `docs/update-documentation` (suite scope), and let the user supply their own. If they choose a new branch, run `git checkout -b <new_branch_name>`; if the branch already exists or the working tree has conflicting uncommitted changes, report it and ask again instead of forcing. Never commit, push or switch branches without this answer. Skip the question only when the user's request already names the branch to use.
+
 ### 1. Discover
 ```bash
 python3 <skill-dir>/scripts/discover.py . --out /tmp/readme-facts.json
