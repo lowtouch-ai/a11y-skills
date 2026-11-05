@@ -137,27 +137,6 @@ Useful options: `--exclude GLOB` (repeatable; applies inside each repository), `
 - **Re-audits**: `--previous-triage` lists every earlier confirmed finding that this review does not confirm, with its status now.
 - **Pipelines**: `--emit-sarif` for code-scanning tools, `--fail-on High` for CI gates, and a suppression policy file for accepted risks and known false positives.
 
-### Maintainers
-
-Run the tests after changing a rule, script or the checklist:
-
-```
-python3 -m pytest tests/appsec-static-audit
-python3 tests/appsec-static-audit/test_skill.py
-```
-
-The dependency advisory snapshot (`references/advisory-db.json.gz`) is built from OSV.dev and should be refreshed regularly; the report warns when it is more than 90 days old. This needs network access and is never run during an audit:
-
-```
-python3 skills/appsec-static-audit/tools/build_advisory_db.py
-```
-
-A prompt for shipping changes to the skill itself:
-
-```
-run the appsec-static-audit tests, then commit and push, open a pull request to main and merge it
-```
-
 ### Update
 
 To get the latest version, use either option, then restart Codex.
