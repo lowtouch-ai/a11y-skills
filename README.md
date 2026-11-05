@@ -53,6 +53,18 @@ For the full documentation suite:
 $repo-readme-generator document this repo fully
 ```
 
+### Update
+
+To get the latest version, remove the installed folder and install it again, then restart Codex:
+
+```
+rm -rf ~/.codex/skills/repo-readme-generator
+```
+
+```
+$skill-installer install https://github.com/lowtouch-ai/krithi-skills/tree/main/skills/repo-readme-generator
+```
+
 ### Uninstall
 
 ```
@@ -75,6 +87,18 @@ Open Codex in the folder you want to work on and run:
 
 ```
 $appsec-static-audit audit this repository for security
+```
+
+### Update
+
+To get the latest version, remove the installed folder and install it again, then restart Codex:
+
+```
+rm -rf ~/.codex/skills/appsec-static-audit
+```
+
+```
+$skill-installer install https://github.com/lowtouch-ai/krithi-skills/tree/main/skills/appsec-static-audit
 ```
 
 ### Uninstall
@@ -107,6 +131,18 @@ Open Codex in the folder you want to work on and run:
 
 ```
 $wave-a11y-scan scan https://example.com
+```
+
+### Update
+
+To get the latest version, remove the installed folder and install it again, then restart Codex:
+
+```
+rm -rf ~/.codex/skills/wave-a11y-scan
+```
+
+```
+$skill-installer install https://github.com/lowtouch-ai/krithi-skills/tree/main/skills/wave-a11y-scan
 ```
 
 ### Uninstall
