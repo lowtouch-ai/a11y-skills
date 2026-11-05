@@ -30,7 +30,15 @@ Produces consistent, architecture-focused documentation grounded in what the rep
 | "Generate/update the README" | `readme` |
 | "Document this repo", "onboarding docs", "docs for agents/Codex", "full documentation", "architecture, stack, design and dependencies docs" | `standard` (or `full` when they ask for as much detail as possible) |
 
-State the scope you chose in one line and offer the next tier up.
+**If the request does not say which one (for example just `$repo-readme-generator`, or "generate docs"), do not start work. Ask first, and wait for the answer:**
+
+> What would you like me to create?
+> 1. **README only**: a single architecture-focused `README.md`.
+> 2. **Full documentation**: `README.md` plus `AGENTS.md` and a `docs/` suite (architecture, stack, development, testing, and more).
+
+Map the answer to scope: 1 is `readme`, 2 is `standard`. Skip the question only when the request already makes the scope clear (see the table above).
+
+Once chosen, state the scope in one line and offer the next tier up.
 
 **Mode:**
 
