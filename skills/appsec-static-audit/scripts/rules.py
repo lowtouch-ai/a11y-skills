@@ -220,7 +220,7 @@ SECRET_PATTERNS = [
     ("Stripe live key", r"\b[sr]k_live_[0-9a-zA-Z]{20,}\b", "Critical"),
     ("Azure storage key", r"AccountKey=[A-Za-z0-9+/=]{40,}", "Critical"),
     ("Hardcoded JWT", r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", "High"),
-    ("Credentials in connection string / URL", r"\b[a-z][a-z0-9+.-]{2,15}://[^/\s:@\"']{2,}:(?![*x]{3,}|\$\{|%\(|<|\{\{)[^/\s:@\"']{3,}@[^\s\"']+", "High"),
+    ("Credentials in connection string / URL", r"\b[a-z][a-z0-9+.-]{2,15}://[^/\s:@\"']{2,}:(?![*xX]{3,}|\$|%\(|%s|<|\{|\[|\*|#\{)[^/\s:@\"']{3,}@[^\s\"']+", "High"),
 ]
 SECRET_PATTERNS = [(n, re.compile(rx), sev) for n, rx, sev in SECRET_PATTERNS]
 GENERIC_SECRET = re.compile(
@@ -294,10 +294,6 @@ R("API-1", "api", "High", "CWE-915", "Mass assignment: request body bound direct
 R("API-2", "api", "Medium", "CWE-209", "GraphQL introspection / playground enabled",
   r"introspection\s*[:=]\s*(true|True)|playground\s*[:=]\s*(true|True)|graphiql\s*[:=]\s*(true|True)|GRAPHIQL\s*=\s*True", "js py java cs yaml conf",
   "Disable introspection and IDEs in production; enforce depth/cost limits.", conf="Medium", owasp="A05")
-P("API-3", "api", "High", "CWE-306", "Route handlers with no authentication evidenced in the same file", "py js java cs php rb go",
-  r"@(app|router|bp|blueprint|\w+_router|\w+_bp)\.(route|get|post|put|delete|patch)\(|(?<![\w.])(app|router)\.(get|post|put|delete|patch)\(|@(Get|Post|Put|Delete|Patch|Request)Mapping|\[Http(Get|Post|Put|Delete)|Route::(get|post|put|delete)|(?-i:(?<![\w.])r\.(GET|POST|PUT|DELETE)\()|(?-i:(?<![\w.])path\(\s*[\"'])",
-  r"authenticate|login_required|@PreAuthorize|@Secured|\[Authorize|passport|jwt|requires_auth|Depends\(|permission_classes|IsAuthenticated|authMiddleware|verifyToken|isAuthenticated|auth_required|RolesAllowed|hasRole|current_user|ensureLoggedIn|requireAuth|before_action\s*:authenticate|middleware\(\s*[\"']auth|authorize|bearer|api_key|session\[",
-  "Apply authentication by default (global middleware/filter) and explicitly mark public routes.", scope="file", owasp="A01", conf="Low", aggregate=True)
 P("API-4", "api", "Medium", "CWE-770", "Rate limiting / throttling not evidenced", "py js java cs php rb go",
   r"express\(\)|Flask\(|FastAPI\(|@RestController|@Controller|\[ApiController\]|urlpatterns|Rails\.application|gin\.Default|mux\.NewRouter|Route::", r"rate.?limit|throttle|Limiter|slowapi|bucket4j|express-rate-limit|RateLimit|ratelimit|rack-attack|AspNetCoreRateLimit|Resilience4j|tollbooth|limiter",
   "Add per-IP and per-account throttling on login, MFA, password-reset and search/export endpoints (and at the WAF/gateway).", owasp="A04")
@@ -351,7 +347,7 @@ P("K8S-5", "iac", "Medium", "CWE-319", "Kubernetes Ingress has no TLS configurat
 P("DKR-3", "iac", "Medium", "CWE-250", "Dockerfile has no non-root USER", "docker",
   r"^\s*FROM\s", r"^\s*USER\s+(?!root\b|0\b)\S+", "Add a non-root USER before ENTRYPOINT/CMD.", scope="file", conf="Medium", aggregate=True)
 R("DKR-4", "iac", "High", "CWE-668", "docker-compose: privileged, host network, docker.sock, or data port published to all interfaces",
-  r"privileged:\s*true|network_mode:\s*[\"']?host|/var/run/docker\.sock|[\"']?(0\.0\.0\.0:)?(5432|3306|27017|6379|9200|1433|5984|11211):(5432|3306|27017|6379|9200|1433|5984|11211)[\"']?", "docker",
+  r"privileged:\s*true|network_mode:\s*[\"']?host|/var/run/docker\.sock|(?<![\w.:\]])[\"']?(0\.0\.0\.0:)?(5432|3306|27017|6379|9200|1433|5984|11211):(5432|3306|27017|6379|9200|1433|5984|11211)[\"']?", "docker",
   "Bind data ports to 127.0.0.1 or an internal network; avoid privileged mode and the Docker socket.")
 R("CI-1", "iac", "High", "CWE-94", "CI workflow interpolates untrusted event data into a script (command injection)",
   r"\$\{\{\s*github\.(event\.(issue|pull_request|comment|review|review_comment|discussion|head_commit|commits|pages|workflow_run)[\w.\[\]*]*\.(title|body|name|label|ref|message|email|login|head_ref)|head_ref)\s*\}\}", "yaml",
@@ -374,6 +370,10 @@ R("CI-5", "secrets", "High", "CWE-532", "CI step prints a secret to the build lo
   r"\b(echo|printf|cat)\b[^\n]*\$\{\{\s*secrets\.|\bset\s+-x\b[^\n]*\$\{\{\s*secrets\.|--password[= ]\$\{\{\s*secrets\.", "yaml",
   "Pass secrets through env: and never echo them; use the platform's masking (::add-mask::) and avoid `set -x` in steps that handle secrets.",
   only_files=r"(^|/)\.github/(workflows|actions)/", conf="Medium", owasp="A09")
+R("SH-1", "deps", "High", "CWE-494", "Shell script downloads remote content and executes it (curl | sh, source <(curl ...), eval $(curl ...))",
+  r"\b(curl|wget)\b[^\n|;]*\|\s*(sudo\s+)?(ba|z|da)?sh\b|(\bsource|(?<![\w.])\.)\s+<\(\s*(curl|wget)\b|\b(ba|z|da)?sh\s+<\(\s*(curl|wget)\b|\beval\s+[\"']?\$\(\s*(curl|wget)\b|\b(ba|z)?sh\s+-c\s+[\"']\$\(\s*(curl|wget)\b", "sh yaml",
+  "Do not execute what a network fetch returns. Ship the script with the release, or download it to a file, verify a pinned checksum/signature, then run it; use https with certificate verification and never rewrite https to http. Secrets should come from an authenticated secret store client, not from `source <(curl ...)`.",
+  conf="Medium", owasp="A08")
 R("CFG-1", "iac", "Medium", "CWE-489", "Debug / development mode enabled in configuration",
   r"\bDEBUG[\"']?\]?\s*=\s*(True|true|1)\b|app\.run\([^)]*debug\s*=\s*True|APP_DEBUG\s*=\s*(true|1)|debug\s*:\s*true|FLASK_DEBUG\s*=\s*(1|true)|NODE_ENV\W+development|spring\.devtools|management\.endpoints\.web\.exposure\.include\s*=\s*\*|spring\.h2\.console\.enabled\s*=\s*true|<compilation[^>]*debug=\"true\"|XDEBUG|APP_ENV\s*=\s*(local|dev)", "py js java cs php conf yaml env rb",
   "Disable debug/dev tooling and actuator/console endpoints in production builds.", flags=I, owasp="A05")
@@ -420,9 +420,15 @@ _REFERENCE = re.compile(r"(?i)^(vault|secret|ssm|kms|env|file|aws-secret|gcp-sec
 _IDENT = re.compile(r"^[A-Za-z_][\w]*(\.[A-Za-z_]\w*)+(\(.*\))?$")
 
 
+_ENUM_VALUES = {"include", "omit", "same-origin", "none", "required", "optional", "default", "auto", "always", "never", "basic", "bearer", "digest",
+                "enabled", "disabled", "inherit", "strict", "lax", "true", "false", "null", "token", "oauth", "oauth2", "jwt", "apikey", "password", "secret"}
+
+
 def looks_secret(val, key=""):
     """Heuristic: does a quoted/unquoted literal look like a credential value rather than a name, path or expression?"""
     v = val.strip()
+    if v.lower() in _ENUM_VALUES:
+        return False
     if _PATHLIKE.search(v) or _ENVNAME.match(v) or _SNAKE.match(v) or _IDENT.match(v) or _KEBAB.match(v) or _REFERENCE.match(v):
         return False
     if re.search(r"[(){}$`]|^\w+\[|^[a-z_]+\.\w+|\bor\b|\bnot\b|^[A-Z]\w+\(", v):
