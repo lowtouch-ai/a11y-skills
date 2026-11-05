@@ -132,6 +132,53 @@ PATH_FUNCS = {"open", "send_file", "send_from_directory", "remove", "unlink", "r
               "copy", "copyfile", "move", "read_text", "write_text", "read_bytes", "write_bytes", "FileResponse", "static_file"}
 
 
+ROUTE_DECORATORS = {"get", "post", "put", "delete", "patch", "options", "head", "route", "api_route", "websocket", "websocket_route"}
+NOT_INPUT_ANNOTATIONS = {"Request", "Response", "BackgroundTasks", "Session", "AsyncSession", "HTTPConnection", "WebSocket", "SecurityScopes", "Depends"}
+TYPED_SAFE_ANNOTATIONS = {"int", "float", "bool", "UUID", "Decimal", "datetime", "date", "time", "timedelta", "PositiveInt", "NonNegativeInt", "conint", "confloat"}
+NOT_INPUT_NAMES = {"self", "cls", "request", "req", "response", "res", "background_tasks", "db", "session", "websocket", "ctx"}
+
+
+def _is_route_function(fn):
+    """True for handlers registered with a web-framework decorator: @app.get(...), @router.post(...), @bp.route(...), @vector.put(...)."""
+    for d in fn.decorator_list:
+        target = d.func if isinstance(d, ast.Call) else d
+        if isinstance(target, ast.Attribute) and target.attr in ROUTE_DECORATORS and isinstance(target.value, (ast.Name, ast.Attribute)):
+            return True
+    return False
+
+
+def _route_params(fn):
+    """Parameters of a route handler that carry client input (path/query/header/body/upload), as {name: description}."""
+    a = fn.args
+    plain = list(getattr(a, "posonlyargs", [])) + list(a.args)
+    defaults = [None] * (len(plain) - len(a.defaults)) + list(a.defaults)
+    pairs = list(zip(plain, defaults)) + list(zip(a.kwonlyargs, a.kw_defaults))
+    out = {}
+    for arg, default in pairs:
+        if arg.arg in NOT_INPUT_NAMES or arg.arg.startswith("_"):
+            continue
+        ann = arg.annotation
+        ann_name = ""
+        if isinstance(ann, ast.Name):
+            ann_name = ann.id
+        elif isinstance(ann, ast.Attribute):
+            ann_name = ann.attr
+        elif isinstance(ann, ast.Subscript):                      # Optional[int], list[str], Annotated[int, Query()]
+            base = ann.value.id if isinstance(ann.value, ast.Name) else getattr(ann.value, "attr", "")
+            inner = ann.slice
+            if base in ("Annotated",) and isinstance(inner, ast.Tuple) and inner.elts:
+                inner = inner.elts[0]
+            ann_name = inner.id if isinstance(inner, ast.Name) else base
+        if ann_name in NOT_INPUT_ANNOTATIONS or ann_name in TYPED_SAFE_ANNOTATIONS:
+            continue
+        if isinstance(default, ast.Call):
+            dn = default.func.id if isinstance(default.func, ast.Name) else getattr(default.func, "attr", "")
+            if dn in ("Depends", "Security"):
+                continue
+        out[arg.arg] = f"route parameter `{arg.arg}` (line {arg.lineno})"
+    return out
+
+
 def _dotted(node):
     parts = []
     while isinstance(node, ast.Attribute):
@@ -144,10 +191,45 @@ def _dotted(node):
     return ".".join(reversed(parts))
 
 
+GUARD_OK = re.compile(r"(?i)(valid|verify|check|ensure|sanit|is_safe|safe_|allowed|is_uuid|is_int|isdigit|isalnum|fullmatch|re\.match|authori[sz]e)")
+GUARD_BAD = re.compile(r"(?i)(invalid|unsafe|forbidden|traversal|malicious|disallowed|not_allowed)")
+
+
+def _call_name(c):
+    f = c.func
+    return f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else ""
+
+
 class _PyTaint:
     def __init__(self, text):
         self.lines = text.split("\n")
         self.hits = []
+        self.shapes = {}      # name -> per-position taint of a list of tuples, e.g. [("SELECT ...", (uuid,))] -> [None, source]
+
+    def positions(self, e, env):
+        """For a list/tuple literal made only of equal-length tuples, the taint of each tuple position (None when untainted)."""
+        if isinstance(e, ast.Name):
+            return self.shapes.get(e.id)
+        if isinstance(e, (ast.List, ast.Tuple, ast.Set)) and e.elts and all(isinstance(x, ast.Tuple) for x in e.elts):
+            width = len(e.elts[0].elts)
+            if any(len(x.elts) != width for x in e.elts):
+                return None
+            return [next((t for t in (self.src_of(x.elts[i], env) for x in e.elts) if t), None) for i in range(width)]
+        return None
+
+    def guard_names(self, st):
+        """`if not validate_x(name): raise/return` (or `if is_bad(name): raise`): the names it validates are trusted afterwards."""
+        if not isinstance(st, ast.If) or not st.body or not isinstance(st.body[-1], (ast.Raise, ast.Return, ast.Continue, ast.Break)):
+            return []
+        t = st.test
+        call = None
+        if isinstance(t, ast.UnaryOp) and isinstance(t.op, ast.Not) and isinstance(t.operand, ast.Call) and GUARD_OK.search(_dotted(t.operand.func) or ""):
+            call = t.operand
+        elif isinstance(t, ast.Call) and GUARD_BAD.search(_dotted(t.func) or ""):
+            call = t
+        if call is None:
+            return []
+        return [a.id for a in list(call.args) + [k.value for k in call.keywords] if isinstance(a, ast.Name)]
 
     def src_of(self, e, env):
         """Return a short description of the untrusted source feeding expression e, or None."""
@@ -344,6 +426,8 @@ class _PyTaint:
                 inner = dict(env)
                 for a in st.args.args + st.args.kwonlyargs:
                     inner.pop(a.arg, None)
+                if _is_route_function(st):
+                    inner.update(_route_params(st))
                 self.block(st.body, inner)
                 continue
             if isinstance(st, ast.ClassDef):
@@ -352,8 +436,14 @@ class _PyTaint:
             self.stmt_calls(st, env)
             if isinstance(st, ast.Assign):
                 src = self.src_of(st.value, env)
+                pos = self.positions(st.value, env)
                 for t in st.targets:
                     self.bind(t, src, env)
+                    if isinstance(t, ast.Name):
+                        if pos is not None:
+                            self.shapes[t.id] = pos
+                        else:
+                            self.shapes.pop(t.id, None)
             elif isinstance(st, ast.AnnAssign) and st.value is not None:
                 self.bind(st.target, self.src_of(st.value, env), env)
             elif isinstance(st, ast.AugAssign):
@@ -361,7 +451,12 @@ class _PyTaint:
                 if src:
                     self.bind(st.target, src, env)
             elif isinstance(st, (ast.For, ast.AsyncFor)):
-                self.bind(st.target, self.src_of(st.iter, env), env)
+                pos = self.positions(st.iter, env)
+                if pos is not None and isinstance(st.target, (ast.Tuple, ast.List)) and len(st.target.elts) == len(pos):
+                    for t, p in zip(st.target.elts, pos):
+                        self.bind(t, p, env)
+                else:
+                    self.bind(st.target, self.src_of(st.iter, env), env)
             elif isinstance(st, (ast.With, ast.AsyncWith)):
                 for it in st.items:
                     if it.optional_vars is not None:
@@ -370,6 +465,8 @@ class _PyTaint:
                 sub = getattr(st, field, None)
                 if sub and isinstance(sub, list) and sub and isinstance(sub[0], ast.stmt):
                     self.block(sub, env)
+            for name in self.guard_names(st):
+                env.pop(name, None)
             for h in getattr(st, "handlers", []) or []:
                 self.block(h.body, env)
             for c in getattr(st, "cases", []) or []:
@@ -378,7 +475,7 @@ class _PyTaint:
 
 def python_flows(text):
     """-> (hits, parsed_ok). Each hit: dict(rule, line, snippet, detail)."""
-    if not re.search(r"request\b|input\(|sys\.argv", text):
+    if not re.search(r"request\b|input\(|sys\.argv|@\w+(\.\w+)*\.(get|post|put|delete|patch|route|api_route|websocket)\(", text):
         return [], True
     try:
         tree = ast.parse(text)

@@ -128,6 +128,39 @@ CASES = {
     "docker-no-user": ({"Dockerfile": "FROM alpine:3.19\nCMD [\"sh\"]\n"}, {"DKR-3"}, set()),
     "k8s-hardened-workload": ({"d.yaml": "apiVersion: apps/v1\nkind: Deployment\nspec:\n  template:\n    spec:\n      securityContext:\n        runAsNonRoot: true\n      containers:\n        - name: a\n          image: nginx@sha256:abc\n          resources:\n            limits:\n              cpu: \"1\"\n"},
                               set(), {"K8S-3", "K8S-4", "K8S-1"}),
+    # ---------------- route parameters are untrusted input (FastAPI / Flask handlers)
+    "fastapi-path-param-ssrf": ({"a.py": 'import requests\n@vector.post("/html/{uuid}/{url:path}")\ndef upload_html(uuid: str, url: str):\n    r = requests.get(url, timeout=10)\n    return r.text\n'},
+                                {"flow:SSRF-1"}, set()),
+    "fastapi-query-param-sql": ({"a.py": '@router.get("/s")\ndef s(q: str = Query(None), db=Depends(get_db)):\n    db.execute("SELECT * FROM t WHERE n=" + q)\n'}, {"flow:INJ-SQL-1"}, set()),
+    "fastapi-int-param-is-safe": ({"a.py": '@app.get("/i/{item_id}")\ndef g(item_id: int):\n    cur.execute("SELECT * FROM t WHERE id=" + str(item_id))\n'}, set(), {"flow:INJ-SQL-1"}),
+    "fastapi-depends-param-is-safe": ({"a.py": '@app.get("/x")\ndef g(conn=Depends(get_conn)):\n    conn.execute("SELECT 1")\n    requests.get(conn)\n'}, set(), {"flow:SSRF-1", "flow:INJ-SQL-1"}),
+    "flask-path-param-file": ({"a.py": '@app.route("/f/<name>")\ndef f(name):\n    return open("/data/" + name).read()\n'}, {"flow:PATH-1"}, set()),
+    "flow-parameterized-tuples-are-safe": ({"a.py": '@vector.get("/c/{uuid}/{fn}")\ndef g(uuid: str, fn: str):\n    legacy = [("SELECT a FROM t WHERE u = %s", (uuid, fn)), ("SELECT b FROM t WHERE u = %s", (uuid, fn))]\n    for query, params in legacy:\n        cur.execute(query, params)\n'},
+                                            set(), {"flow:INJ-SQL-1"}),
+    "flow-tainted-query-in-tuples": ({"a.py": '@vector.get("/c/{uuid}")\ndef g(uuid: str):\n    for query, params in [("SELECT a FROM t WHERE u = \'" + uuid + "\'", ())]:\n        cur.execute(query, params)\n'}, {"flow:INJ-SQL-1"}, set()),
+    "flow-validator-guard-clears-taint": ({"a.py": '@vector.get("/c/{uuid}")\ndef g(uuid: str):\n    if not validate_uuid(uuid):\n        raise HTTPException(400)\n    return open("/data/" + uuid).read()\n'}, set(), {"flow:PATH-1"}),
+    "flow-unvalidated-path-param": ({"a.py": '@vector.post("/p/{uuid}/{fn}")\ndef p(uuid: str, fn: str):\n    path = os.path.join(DATA, "x", uuid, fn)\n    with open(path, "wb") as fh:\n        fh.write(b"")\n'}, {"flow:PATH-1"}, set()),
+    "flow-guard-on-a-different-name": ({"a.py": '@vector.get("/c/{a}/{b}")\ndef g(a: str, b: str):\n    if not validate_uuid(a):\n        raise HTTPException(400)\n    return open("/data/" + b).read()\n'}, {"flow:PATH-1"}, set()),
+    "plain-helper-param-is-not-input": ({"a.py": 'def helper(url):\n    return requests.get(url)\n'}, set(), {"flow:SSRF-1"}),
+    # ---------------- shell scripts that execute what the network returns
+    "sh-source-curl": ({"entry.sh": '#!/bin/sh\nsource <(curl -s "$VAULT_GET_ADDR/get_secret.sh")\n'}, {"SH-1"}, set()),
+    "sh-curl-pipe-bash": ({"i.sh": 'curl -fsSL https://example.com/install.sh | sudo bash\n'}, {"SH-1"}, set()),
+    "sh-eval-curl": ({"i.sh": 'eval "$(curl -s https://example.com/env)"\n'}, {"SH-1"}, set()),
+    "sh-curl-to-file-is-not-flagged": ({"i.sh": 'curl -fsSLo /tmp/x.sh https://example.com/x.sh\nsha256sum -c x.sh.sha256\nsh /tmp/x.sh\n'}, set(), {"SH-1"}),
+    "sh-curl-pipe-jq-is-safe": ({"i.sh": 'curl -s "$URL" | jq .name\n'}, set(), {"SH-1"}),
+    # ---------------- noise reduction
+    "dkr4-loopback-binding-is-safe": ({"docker-compose.yml": 'services:\n  r:\n    image: redis:7\n    ports:\n      - "127.0.0.1:6379:6379"\n'}, set(), {"DKR-4"}),
+    "dkr4-all-interfaces": ({"docker-compose.yml": 'services:\n  r:\n    image: redis:7\n    ports:\n      - "6379:6379"\n'}, {"DKR-4"}, set()),
+    "connstr-interpolation-forms-are-safe": ({"c.py": 'A = "postgresql://admin:$DB_PASSWORD@db/app"\nB = "postgresql://admin:$${DB_PASSWORD}@db/app"\nC = f"postgresql://admin:{pw}@db/app"\nD = "postgresql://admin:${PW}@db/app"\n'},
+                                             set(), {"SEC-CREDENTIALS-IN-CONNECTION-ST"}),
+    "connstr-literal-password": ({"c.py": 'A = "postgresql://admin:Sup3rS3cr3t@db/app"\n'}, {"SEC-CREDENTIALS-IN-CONNECTION-ST"}, set()),
+    "fetch-credentials-include-is-not-a-secret": ({"a.js": "fetch('/api', { method: 'POST', credentials: 'include' });\n"}, set(), {"SEC-HARDCODED-CREDENTIAL-LITERAL"}),
+    # ---------------- API-3 follows the route inventory
+    "api3-custom-router-name": ({"a.py": 'from fastapi import APIRouter\ncodex = APIRouter()\n@codex.get("/tickets")\ndef tickets():\n    return []\n'}, {"API-3"}, set()),
+    "api3-health-only-is-public": ({"a.py": 'from fastapi import FastAPI\napp = FastAPI()\n@app.get("/health")\ndef health():\n    return {"ok": True}\n'}, set(), {"API-3"}),
+    "api3-auth-dependency-counts": ({"a.py": '@app.get("/me")\ndef me(user=Depends(get_current_user)):\n    return user\n'}, set(), {"API-3"}),
+    "api3-db-dependency-is-not-auth": ({"a.py": '@app.get("/rows")\ndef rows(db=Depends(get_db)):\n    return db.all()\n'}, {"API-3"}, set()),
+    "api3-api-key-env-is-not-auth": ({"a.py": 'import os\nOPENAI_API_KEY = os.getenv("OPENAI_API_KEY")\n@app.get("/rows")\ndef rows():\n    return []\n'}, {"API-3"}, set()),
     "php-ssrf": ({"a.php": "<?php\n$x = file_get_contents($_GET['u']);\n"}, {"SSRF-2"}, set()),
 }
 
@@ -273,6 +306,64 @@ def test_osv_import_merges_without_duplicates():
     flask = [f for f in s["findings"] if f["rule"] == "DEP-1" and "flask" in f["title"]]
     assert len(flask) == 1, [f["title"] for f in flask]
     assert flask[0]["severity"] == "Critical" and "GHSA-new-0000-0000" in flask[0]["detail"]
+
+
+def test_http_prefixed_package_names_are_not_urls():
+    s = scan({"requirements.txt": "httpx\nhttp-parser>=0.9\nrequests==2.32.3\n"})
+    dep3 = [f for f in s["findings"] if f["rule"] == "DEP-3"]
+    assert dep3, "unpinned httpx should be reported"
+    locs = {l["snippet"] for f in dep3 for l in f["locations"]}
+    assert "httpx" in locs and not any("httpx httpx" in x for x in locs), locs
+    assert s["dependencies"]["ecosystems"]["pypi"]["total"] == 3
+
+
+def test_dependency_evidence_is_the_real_source_line():
+    s = scan({"requirements.txt": "pyyaml==5.3\nflask\n", "package.json": json.dumps({"dependencies": {"jsonwebtoken": "8.5.1"}}, indent=2)})
+    by = {(f["rule"], f["file"]): f for f in s["findings"]}
+    assert by[("DEP-1", "requirements.txt")]["locations"][0]["snippet"] == "pyyaml==5.3" and by[("DEP-1", "requirements.txt")]["locations"][0]["line"] == 1
+    assert by[("DEP-3", "requirements.txt")]["locations"][0]["snippet"] == "flask"
+    jw = next(f for f in s["findings"] if f["rule"] == "DEP-1" and "jsonwebtoken" in f["title"])
+    assert jw["locations"][0]["snippet"] == '"jsonwebtoken": "8.5.1"' and jw["locations"][0]["line"] == 3
+
+
+def test_low_confidence_candidates_are_capped_at_medium():
+    s = scan({"l.py": 'logger.info(f"body {request.json}")\n'})
+    f = next(x for x in s["findings"] if x["rule"] == "DATA-3")
+    assert f["severity"] == "Medium" and f["severity_scanner"] == "High" and "capped at Medium" in f["detail"]
+    hi = scan({"a.py": 'import os\nos.system("ls " + x)\n'})
+    assert next(x for x in hi["findings"] if x["rule"] == "INJ-CMD-1")["severity"] == "Critical"     # high-confidence rules keep their severity
+
+
+def test_history_scan_ignores_docs_and_interpolation_and_downgrades_tests():
+    with tempfile.TemporaryDirectory(prefix="appsec-hist-") as tmp:
+        repo, out = os.path.join(tmp, "repo"), os.path.join(tmp, "out")
+        files = {"docs/guide.md": 'Use a placeholder like `password = "changeme123"` and fetch(url, { credentials: \'include\' }).\n',
+                 "compose.yml": 'DB: "postgresql://admin:$${DB_PASSWORD}@db/app"\nOTHER: "postgresql://admin:$DB_PASSWORD@db/app"\n',
+                 "app/real.py": 'STRIPE = "sk_live_' + "a1B2c3D4e5F6g7H8i9J0k1L2" + '"\n',
+                 "tests/fixture.py": 'KEY = "sk_live_' + "Z9y8X7w6V5u4T3s2R1q0P9o8" + '"\n'}
+
+        def commit(msg):
+            for cmd in (["add", "-A"], ["commit", "-qm", msg]):
+                subprocess.run(["git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", *cmd], check=True, capture_output=True)
+        write_files(repo, files)
+        subprocess.run(["git", "-C", repo, "init", "-q"], check=True, capture_output=True)
+        commit("add")
+        write_files(repo, {rel: "# cleaned\n" for rel in files})          # overwrite: the old lines stay in history
+        commit("clean")
+        subprocess.run([sys.executable, "-I", AUDIT, repo, "--out", out], check=True, capture_output=True)
+        s = json.load(open(os.path.join(out, "scan.json")))
+    hist = {f["file"]: f for f in s["findings"] if f["rule"] == "SEC-HIST-1"}
+    assert "docs/guide.md" not in hist and "compose.yml" not in hist, list(hist)
+    assert hist["app/real.py"]["severity"] == "Critical"
+    assert hist["tests/fixture.py"]["severity"] == "High", "a key in test code is reported one level lower"
+
+
+def write_files(repo, files):
+    for rel, content in files.items():
+        p = os.path.join(repo, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(content)
 
 
 if __name__ == "__main__":

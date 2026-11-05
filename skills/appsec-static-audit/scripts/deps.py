@@ -200,8 +200,8 @@ def _read(path):
         return ""
 
 
-def _comp(eco, name, version, spec, file, dev=False, line=0, direct=None):
-    return dict(ecosystem=eco, name=name, version=version, spec=spec, file=file, dev=dev, line=line, direct=direct)
+def _comp(eco, name, version, spec, file, dev=False, line=0, direct=None, raw=""):
+    return dict(ecosystem=eco, name=name, version=version, spec=spec, file=file, dev=dev, line=line, direct=direct, raw=raw)
 
 
 def parse_package_json(path, rel, text):
@@ -214,7 +214,9 @@ def parse_package_json(path, rel, text):
         for n, spec in (data.get(key) or {}).items():
             spec = str(spec)
             exact = re.fullmatch(r"=?v?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-+]+)?)", spec.strip())   # "4.17.15" is a pin, "^4.17.15" is a range
-            out.append(_comp("npm", n, exact.group(1) if exact else None, spec, rel, dev))
+            m_line = re.search(r'^[ \t]*"' + re.escape(n) + r'"\s*:\s*"[^"\n]*"', text, re.M)
+            out.append(_comp("npm", n, exact.group(1) if exact else None, spec, rel, dev,
+                             line=(text.count("\n", 0, m_line.start()) + 1) if m_line else 0, raw=m_line.group(0).strip() if m_line else f'"{n}": "{spec}"'))
     return out
 
 
@@ -254,16 +256,18 @@ def parse_yarn_lock(path, rel, text):
 
 def parse_requirements(path, rel, text):
     out = []
-    for i, line in enumerate(text.splitlines(), 1):
-        line = line.split("#")[0].strip()
-        if not line or line.startswith(("-", "git+", "http")):
-            if line.startswith(("git+", "http")):
-                out.append(_comp("pypi", line[:80], None, line, rel, line=i))
+    for i, raw_line in enumerate(text.splitlines(), 1):
+        line = raw_line.split(" #")[0].split("\t#")[0].strip()
+        if line.startswith("#"):
+            continue
+        if not line or line.startswith("-") or re.match(r"(git\+|hg\+|svn\+|bzr\+|https?://|file:|ftp://)", line):
+            if re.match(r"(git\+|hg\+|svn\+|bzr\+|https?://|file:|ftp://)", line):
+                out.append(_comp("pypi", line[:80], None, line, rel, line=i, raw=raw_line.strip()[:200]))
             continue
         m = re.match(r"([A-Za-z0-9_.\-]+)(\[[^\]]*\])?\s*(==|>=|<=|~=|>|<|!=)?\s*([^;\s,]*)", line)
         if m:
             ver = m.group(4) if m.group(3) == "==" else None
-            out.append(_comp("pypi", m.group(1).lower().replace("_", "-"), ver, (m.group(3) or "") + (m.group(4) or "") or "*", rel, line=i))
+            out.append(_comp("pypi", m.group(1).lower().replace("_", "-"), ver, (m.group(3) or "") + (m.group(4) or "") or "*", rel, line=i, raw=raw_line.strip()[:200]))
     return out
 
 
@@ -535,12 +539,13 @@ def analyze(components, root_files, osv_results=None, db=None):
             findings.append(dict(rule="DEP-2", domain="deps", severity="Medium", cwe="CWE-1104",
                                  title=f"Unmaintained / end-of-life dependency: {c['name']}",
                                  file=c["file"], line=c["line"] or 1, detail=ABANDONED[key],
+                                 locations=[dict(line=c["line"] or 1, snippet=c.get("raw") or f"{c['name']} {c['spec']}")],
                                  fix="Replace with a maintained alternative and remove the dependency.",
                                  confidence="High", owasp="A06"))
         spec = c["spec"] or ""
         if (c["ecosystem"] == "npm" and not c["version"] and re.search(r"^(\*|latest|x|)$|^(git|https?|github:|file:)", spec)) or \
                 (c["ecosystem"] == "pypi" and os.path.basename(c["file"]).startswith("requirements") and not c["version"]):
-            unpinned.setdefault((c["file"], c["ecosystem"]), []).append((c["name"], spec or "*", c["line"] or 1))
+            unpinned.setdefault((c["file"], c["ecosystem"]), []).append((c["name"], spec or "*", c["line"] or 1, c.get("raw") or f"{c['name']} {spec or '*'}"))
 
     # imported connected-scan results (osv-scanner JSON) merge into the same per-component findings
     if osv_results:
@@ -568,18 +573,19 @@ def analyze(components, root_files, osv_results=None, db=None):
         findings.append(dict(rule="DEP-1", domain="deps", severity=sev, cwe="CWE-1395",
                              title=f"Known vulnerable dependency: {c['name']} {ver} ({len(vulns)} advisor{'y' if len(vulns) == 1 else 'ies'})",
                              file=c["file"], line=c.get("line") or 1,
+                             locations=[dict(line=c.get("line") or 1, snippet=c.get("raw") or f"{c['name']} {ver} (resolved version from {os.path.basename(c['file'])})")],
                              detail=f"{top}. Matched by exact version against the {'imported OSV results and ' if ent.get('imported') else ''}advisory snapshot. "
                                     + (" ".join(n + "." for n in notes)),
                              fix=fix, confidence="High", owasp="A06", ids=all_ids))
     for (f, eco), items in unpinned.items():
-        names = ", ".join(f"{n} ({sp})" for n, sp, _ in items[:15]) + ("..." if len(items) > 15 else "")
+        names = ", ".join(f"{n} ({sp})" for n, sp, _, _ in items[:15]) + ("..." if len(items) > 15 else "")
         findings.append(dict(rule="DEP-3", domain="deps", severity="Medium" if eco == "npm" else "Low", cwe="CWE-829",
                              title=f"{len(items)} unpinned or non-registry {eco} dependenc{'y' if len(items) == 1 else 'ies'} in {os.path.basename(f)}",
                              file=f, line=items[0][2],
                              detail=f"No exact version pin (or git/URL source): {names}. Builds are not reproducible and may pull a vulnerable release.",
                              fix="Pin exact versions (preferably with hashes) or commit a lockfile, and install with `npm ci` / `pip install --require-hashes`.",
                              confidence="Medium", owasp="A08",
-                             locations=[dict(line=ln, snippet=f"{n} {sp}") for n, sp, ln in items[:25]]))
+                             locations=[dict(line=ln, snippet=raw) for _n, _sp, ln, raw in items[:25]]))
 
     # manifests without a lockfile in the same directory (the installed tree, incl. transitive packages, cannot be audited)
     names_by_dir, abs_of = {}, {}
@@ -603,6 +609,7 @@ def analyze(components, root_files, osv_results=None, db=None):
                     continue
                 findings.append(dict(rule="DEP-4", domain="deps", severity="Medium", cwe="CWE-1104",
                                      title=f"{manifest} without a lockfile ({', '.join(locks[:3])})", file=rel, line=1,
+                                     locations=[dict(line=1, snippet=f"{manifest} found in {d or '.'}; none of {', '.join(locks[:4])} alongside it")],
                                      detail="Without a lockfile the installed tree (including transitive packages) is not reproducible, so it cannot be matched against advisories exactly.",
                                      fix="Generate and commit the lockfile and install from it (`npm ci`, `poetry install`, `uv sync --frozen`, `cargo build --locked`, `composer install`).",
                                      confidence="High", owasp="A08"))

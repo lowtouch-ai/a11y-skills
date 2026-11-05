@@ -564,9 +564,26 @@ ROUTE_PATTERNS = [
     ("Go", re.compile(r"(?-i:(?<![\w])\w+\.(GET|POST|PUT|DELETE|PATCH|Handle|HandleFunc)\(\s*\"([^\"]*)\")"), {"go"}),
     ("Laravel", re.compile(r"Route::(get|post|put|delete|patch)\(\s*[\"']([^\"']*)[\"']"), {"php"}),
 ]
-AUTH_EVIDENCE = re.compile(r"(?i)login_required|permission_required|jwt_required|Depends\(|Security\(|authenticate|authorize|@PreAuthorize|@Secured|@RolesAllowed|requires_auth|auth_required|isAuthenticated|ensureAuth|ensureLoggedIn|verifyToken|passport\.|requireAuth|\bprotect\b|\bguard\b|bearer|IsAuthenticated|permission_classes|\[Authorize|current_user|require_login|before_action\s*:authenticate")
+AUTH_EVIDENCE = re.compile(r"(?i)login_required|permission_required|jwt_required|Depends\(\s*[\w.]*(auth|user|token|permission|current|verify|require|login|role|jwt|bearer|oauth|principal|credential|security|admin)|Security\(|authenticate|authorize|@PreAuthorize|@Secured|@RolesAllowed|requires_auth|auth_required|isAuthenticated|ensureAuth|ensureLoggedIn|verifyToken|passport\.|requireAuth|\bprotect\b|\bguard\b|bearer|IsAuthenticated|permission_classes|\[Authorize|current_user|require_login|before_action\s*:authenticate")
 ROUTER_LEVEL_AUTH = re.compile(r"(?i)dependencies\s*=\s*\[|(app|router)\.use\(\s*[\w.]*(auth|jwt|passport|protect|verify)|@(PreAuthorize|Secured|Authorize)[^\n]*\n\s*(public\s+)?(class|@)|\[Authorize\]\s*\n\s*(\[[^\n]*\]\s*\n\s*)*public\s+class|SecurityFilterChain|authorizeHttpRequests")
 PUBLIC_PATH = re.compile(r"(?i)^/?(health\w*|ping|ready\w*|live\w*|metrics|static|favicon\.ico|version|status|docs|openapi\.json|login|logout|callback)\b")
+
+
+def routes_to_findings(routes, col):
+    """API-3 comes from the route inventory (one source of truth): routes with no authentication marker nearby, grouped per file.
+    Routes that are public by convention (health, login, docs...) are not candidates."""
+    by_file = {}
+    for r in routes:
+        if r["auth"] == "none seen":
+            by_file.setdefault(r["file"], []).append(r)
+    for f, rs in by_file.items():
+        total = sum(1 for r in routes if r["file"] == f)
+        col.add_raw(dict(rule="API-3", domain="api", severity="High", cwe="CWE-306", owasp="A01",
+                         title="Route handlers with no authentication evidenced near the route", file=f, line=rs[0]["line"],
+                         fix="Apply authentication by default (global middleware/dependency/filter) and explicitly mark public routes; verify authorization on every object these routes return.",
+                         confidence="Medium",
+                         detail=f"{len(rs)} of {total} route registration(s) in this file have no authentication marker (login/auth dependency, decorator, guard) within a few lines. It may be enforced by a gateway, a router-level dependency or a base class: confirm by reading the code.",
+                         locations=[dict(line=r["line"], snippet=f"{r['method']} {r['path']}") for r in rs[:25]]))
 
 
 def find_routes(rel, text, tags, out, cap=3000):
@@ -652,10 +669,13 @@ def scan_history(root, max_commits, working_hashes, col, timeout=600):
         base = os.path.basename(fil)
         if base in LOCK_NAMES or base.endswith(".min.js") or os.path.splitext(base.lower())[1] in BINARY_EXT or len(line) > 2000:
             continue
-        hit = secret_scan(line[1:], tags_for(fil), is_comment(line[1:]))
+        ftags = tags_for(fil)
+        hit = secret_scan(line[1:], ftags, is_comment(line[1:]))
         if not hit:
             continue
         name, val, sev = hit
+        if "md" in ftags and not name.startswith(("Private key", "AWS", "GitHub", "Slack", "Google", "Stripe", "Azure", "Hardcoded JWT")):
+            continue  # documentation/prose: only unmistakable key formats count, generic literals and connection-string examples do not
         if TEST_RX.search(fil) and name.startswith("Hardcoded credential literal"):
             continue  # generic literals in test code are not reported; specific key formats still are
         h = hashlib.sha1(val.encode()).hexdigest()
@@ -673,7 +693,7 @@ def scan_history(root, max_commits, working_hashes, col, timeout=600):
         meta = dict(id="SEC-HIST-1", domain="secrets", severity=s["severity"], cwe="CWE-798", owasp="A02",
                     title=f"Secret in git history: {s['name']}", fix="Treat as compromised: rotate/revoke now, then purge history (git filter-repo / BFG) and force-push, and invalidate clones. Add pre-commit and CI secret scanning.",
                     confidence="High")
-        col.add(meta, fil, 1, s["snippet"], "source",
+        col.add(meta, fil, 1, s["snippet"], "test" if TEST_RX.search(fil) else "source",
                 detail=f"Introduced in commit {s['first_commit']} ({s['first_date'][:10]}); {where}; {s['occurrences']} occurrence(s) across history.")
     return res
 
@@ -722,6 +742,13 @@ def import_sarif(path, col):
 # --------------------------------------------------------------------------- assemble
 def finalize(col, cap_per_rule=40):
     cands = list(col.groups.values())
+    for c in cands:
+        # A low-confidence match (or an absence-of-evidence check) is a lead, not a High/Critical claim: the assessor raises
+        # the severity after confirming it in the code. This keeps the headline counts honest on large repositories.
+        if c.get("confidence") == "Low" and c["severity"] in ("Critical", "High") and c["rule"] != "SEC-HIST-1":
+            c["severity_scanner"] = c["severity"]
+            c["severity"] = "Medium"
+            c["detail"] = (c.get("detail", "") + " Severity capped at Medium because the match is low-confidence; raise it if the code confirms the weakness.").strip()
     by_rule = {}
     for c in cands:
         by_rule.setdefault(c["rule"], []).append(c)
@@ -735,7 +762,11 @@ def finalize(col, cap_per_rule=40):
     seen = {}
     for c in kept:
         # fingerprint ignores line numbers so it survives edits elsewhere in the file; title distinguishes aggregate findings
-        base = f"{c['rule']}|{c['file']}|{c['title'] if c['rule'].startswith(('DEP-', 'SARIF')) else ''}|{re.sub(chr(92) + 's+', ' ', c['locations'][0]['snippet']).strip()[:160]}"
+        # aggregate findings (dependencies, route inventory, imported results) are identified by rule, file and title: their
+        # evidence text can be reworded or extended without the finding becoming a "new" one
+        stable_title = c["rule"].startswith(("DEP-", "SARIF", "API-3"))
+        norm_title = re.sub(r"\s*\(\d+ advisor(y|ies)\)|^\d+ ", "", c["title"])     # the advisory / dependency count changes as the data does
+        base = f"{c['rule']}|{c['file']}|{norm_title if stable_title else ''}|{'' if stable_title else re.sub(chr(92) + 's+', ' ', c['locations'][0]['snippet']).strip()[:160]}"
         fp = hashlib.sha1(base.encode()).hexdigest()[:10]
         n = seen.get(fp, 0) + 1
         seen[fp] = n
@@ -925,6 +956,7 @@ def main():
         root, a.max_file_kb, col, jobs=max(1, a.jobs), excludes=excludes,
         progress=lambda n, t: print(f"  ... {n:,}/{t:,} files scanned", file=sys.stderr, flush=True))
 
+    routes_to_findings(inv["routes"], col)
     comps = depmod.collect(manifest_files)
     db = depmod.load_db(a.advisory_db)
     dbi = depmod.db_info(db)

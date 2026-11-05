@@ -55,6 +55,8 @@ LINE_SAMPLES = {
     "CI-3": (".github/workflows/pin.yml", "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: some-org/action@main\n"),
     "CI-4": (".github/workflows/perm.yml", "on: push\npermissions: write-all\njobs:\n  b:\n    runs-on: ubuntu-latest\n"),
     "CI-5": (".github/workflows/echo.yml", "on: push\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ${{ secrets.TOKEN }}\n"),
+    "SH-1": ("entry.sh", "#!/bin/sh\nsource <(curl -s \"$VAULT_GET_ADDR/get_secret.sh\")\n"),
+    "API-3": ("api.py", "from fastapi import APIRouter\nr = APIRouter()\n@r.get(\"/tickets\")\ndef tickets():\n    return []\n"),
     "K8S-2": ("dep.yaml", "apiVersion: apps/v1\nkind: Deployment\nspec:\n  containers:\n    - image: nginx:latest\n"),
     "CRY-2": ("c2.py", "password_hash = hashlib.md5(password.encode()).hexdigest()\n"),
     "DATA-3": ("d3.py", "logger.info(f\"body {request.json}\")\n"),

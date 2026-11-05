@@ -395,8 +395,10 @@
         },
         {
           "key": "DEP-04",
-          "issue": "SBOM (CycloneDX) generated for the release",
-          "signals": [],
+          "issue": "Dependency sources are trusted: no typosquatted names, remote-fetching install or startup scripts (curl | sh, source <(curl ...)), plain-HTTP registries or dependency-confusion indexes",
+          "signals": [
+            "SH-1"
+          ],
           "review": "SBOM produced by this audit; confirm it is produced in CI per release."
         }
       ]

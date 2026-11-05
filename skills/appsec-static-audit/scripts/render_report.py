@@ -23,6 +23,7 @@ triage.json (written by the auditor after reading the code):
 """
 import argparse
 import glob
+import hashlib
 import json
 import os
 import re
@@ -109,6 +110,81 @@ def load_frameworks(extra):
     return fw
 
 
+def norm_ws(x):
+    return re.sub(r"\s+", " ", x or "").strip()
+
+
+def _evidence_fragments(evidence):
+    parts = re.split(r"\.\.\.|…|\[MASKED\]|\*{4,}", evidence or "")
+    frags = [norm_ws(p) for p in parts]
+    return sorted([p for p in frags if len(p) >= 10], key=len, reverse=True)[:2]
+
+
+def check_evidence(repo, rel, line, evidence):
+    """Check a hand-written citation against the working tree. -> (line, message|None, corrected). Quoted evidence may be abbreviated with '...'."""
+    root = os.path.realpath(repo)
+    p = os.path.realpath(os.path.join(root, rel or ""))
+    if not p.startswith(root + os.sep) or not os.path.isfile(p):
+        return line, f"'{rel}' is not in the working tree (expected only for a git-history finding; otherwise fix the path)", False
+    try:
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().split("\n")
+    except OSError:
+        return line, f"'{rel}' could not be read", False
+    if line < 1 or line > len(lines):
+        return line, f"{rel}:{line} is outside the file ({len(lines)} lines)", False
+    frags = _evidence_fragments(evidence)
+    if not frags:
+        return line, None, False
+    nl = [norm_ws(x) for x in lines]
+    if all(fr in " ".join(nl[max(0, line - 9):line + 8]) for fr in frags):
+        return line, None, False
+    single = [i + 1 for i in range(len(nl)) if frags[0] in nl[i]]
+    joined = [i + 1 for i in range(len(nl)) if frags[0] in " ".join(nl[i:i + 3])]
+    cands = single or joined
+    if cands:
+        best = min(cands, key=lambda c: abs(c - line))
+        return best, f"{rel}: cited line {line} but the quoted evidence is at line {best}; corrected", True
+    return line, f"{rel}:{line}: the quoted evidence was not found in the file", False
+
+
+def assign_manual_ids(manual, reg_path):
+    """Manual findings get IDs that survive re-renders: keyed by (file, CWE, domain) or an explicit `key`, remembered in finding-ids.json."""
+    try:
+        with open(reg_path, encoding="utf-8") as fh:
+            reg = json.load(fh)
+    except (OSError, ValueError):
+        reg = {}
+    m = reg.setdefault("manual", {})
+    used = {int(v) for v in m.values()}
+    nxt = max(used | {0}) + 1
+    seen = {}
+    taken = {}
+    for f in manual:
+        key = f["_mkey"]
+        seen[key] = seen.get(key, 0) + 1
+        k2 = key if seen[key] == 1 else f"{key}#{seen[key]}"
+        num = None
+        if f.get("_explicit_id"):
+            num = int(f["_explicit_id"][5:])
+            m[k2] = num
+        elif k2 in m:
+            num = int(m[k2])
+        if num is None:
+            while nxt in used or nxt in taken:
+                nxt += 1
+            num = nxt
+            m[k2] = num
+        used.add(num)
+        taken[num] = k2
+        f["id"] = f"FND-M{num:02d}"
+    try:
+        with open(reg_path, "w", encoding="utf-8") as fh:
+            json.dump(reg, fh, indent=1, sort_keys=True)
+    except OSError:
+        pass
+
+
 def masked_excerpt(repo, rel, line, context=22):
     """Masked source lines around `line`. The path must resolve inside the repository."""
     root = os.path.realpath(repo)
@@ -131,8 +207,9 @@ def write_packets(out, repo, crit_high, scan):
     index = ["# Verification packets\n",
              "Give each packet to a reviewer (a fresh agent/session or a different person) who has **not** seen the original triage. "
              "They answer from the code, then fill `verification.json` (template at the end of each packet). Save it as `work/verification.json` next to `scan.json`.\n",
-             "| ID | Severity | Claim | Packet |", "|---|---|---|---|"]
+             "| ID | Severity | Claim | Packet | SHA-256 (start) |", "|---|---|---|---|---|"]
     template = {}
+    manifest = {}
     for f in crit_high:
         locs = (f.get("locations") or [dict(line=f["line"])])[:3]
         body = [f"# Verify {f['id']}: {f['title']}\n",
@@ -149,18 +226,24 @@ def write_packets(out, repo, crit_high, scan):
                  "3. What is the realistic impact, and does the claimed severity fit?",
                  "4. Give a verdict: `agree`, `disagree` or `inconclusive`.\n",
                  "## Verdict template\n", "```json",
-                 json.dumps({f["id"]: {"verdict": "agree | disagree | inconclusive", "verifier": "name or agent", "independence": "independent | self",
+                 json.dumps({f["id"]: {"verdict": "agree | disagree | inconclusive", "verifier": "name or agent", "session": "model / session id",
+                                       "independence": "independent | self", "packet_sha256": "output of: sha256sum " + f["id"] + ".md",
                                        "severity_suggestion": "", "notes": "one or two sentences with file:line evidence"}}, indent=2), "```\n",
                  "Secrets are masked in this packet. Do not write secret values anywhere."]
         fn = f"{f['id']}.md"
+        text = "\n".join(body)
         with open(os.path.join(out, fn), "w", encoding="utf-8") as fh:
-            fh.write("\n".join(body))
-        index.append(f"| {f['id']} | {f['severity']} | {cell(f['title'])} | [{fn}]({fn}) |")
-        template[f["id"]] = {"verdict": "", "verifier": "", "independence": "independent", "severity_suggestion": "", "notes": ""}
+            fh.write(text)
+        sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        manifest[f["id"]] = dict(file=fn, sha256=sha)
+        index.append(f"| {f['id']} | {f['severity']} | {cell(f['title'])} | [{fn}]({fn}) | `{sha[:12]}` |")
+        template[f["id"]] = {"verdict": "", "verifier": "", "session": "", "independence": "independent", "packet_sha256": sha, "severity_suggestion": "", "notes": ""}
     with open(os.path.join(out, "INDEX.md"), "w", encoding="utf-8") as fh:
         fh.write("\n".join(index) + "\n")
     with open(os.path.join(out, "verification.template.json"), "w", encoding="utf-8") as fh:
         json.dump({"verifications": template}, fh, indent=2)
+    with open(os.path.join(out, "manifest.json"), "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=1, sort_keys=True)
     print(f"Wrote {len(crit_high)} verification packet(s) to {out}")
 
 
@@ -215,7 +298,8 @@ def main():
     ap.add_argument("--strict-checklist", action="store_true", help="refuse to render while any checklist item lacks a reviewer status")
     ap.add_argument("--verification", help="verification.json from the independent second pass (default: <out>/work/verification.json if present)")
     ap.add_argument("--packets", metavar="DIR", help="instead of rendering, write blind verification packets for confirmed Critical/High findings into DIR (needs --repo)")
-    ap.add_argument("--repo", help="repository path, used only by --packets to quote masked source excerpts")
+    ap.add_argument("--repo", help="repository path: used by --packets to quote masked excerpts, and to check that hand-written file:line citations and quoted evidence match the source")
+    ap.add_argument("--strict-evidence", action="store_true", help="with --repo, treat a manual citation that does not match the source as an error instead of a warning")
     ap.add_argument("--emit-sarif", action="store_true", help="also write a SARIF 2.1.0 file next to the report (confirmed and unconfirmed findings; rejected ones as suppressed)")
     ap.add_argument("--fail-on", choices=["Critical", "High", "Medium", "Low"], help="exit with code 10 if a confirmed finding at or above this severity exists (for CI gates)")
     ap.add_argument("--fail-on-unconfirmed", action="store_true", help="with --fail-on, count unconfirmed candidates too")
@@ -231,6 +315,30 @@ def main():
     dom_order = [d["key"] for d in cl_spec["domains"]]
     meta = {**scan["meta"], **tri.get("meta", {})}
     errors, warnings = [], []
+
+    out_dir0 = a.out or os.path.dirname(os.path.abspath(a.scan))
+    # ---------------- hand-written citations must match the source
+    manual_items = [(n, n.get("file"), "line") for n in (tri.get("new_findings") or [])]
+    ov_locs = [(loc, loc.get("file") or (tri.get("overrides") or {}).get(k, {}).get("file"), "line") for k, ov in (tri.get("overrides") or {}).items() for loc in (ov.get("locations") or [])]
+    if a.repo and os.path.isdir(a.repo):
+        for n in tri.get("new_findings") or []:
+            ln, msg, fixed = check_evidence(a.repo, n.get("file"), int(n.get("line", 1) or 1), n.get("evidence"))
+            if fixed:
+                n["line"] = ln
+            if msg:
+                (warnings if (fixed or not a.strict_evidence) else errors).append(f"manual finding '{n.get('title', '')[:50]}': {msg}")
+        for k, ov in (tri.get("overrides") or {}).items():
+            for loc in ov.get("locations") or []:
+                f_ = loc.get("file") or ov.get("file")
+                if not f_:
+                    continue
+                ln, msg, fixed = check_evidence(a.repo, f_, int(loc.get("line", 1) or 1), loc.get("snippet"))
+                if fixed:
+                    loc["line"] = ln
+                if msg:
+                    (warnings if (fixed or not a.strict_evidence) else errors).append(f"{k} location: {msg}")
+    elif manual_items or ov_locs:
+        warnings.append("hand-written file:line citations and quoted evidence were not checked against the source (pass --repo <path> to validate them)")
 
     # ---------------- findings: apply triage
     decisions = {}
@@ -291,20 +399,34 @@ def main():
             rejected.append((f, ("Consolidated into " + into[f["id"]] + ". " if into.get(f["id"]) else "") + reasons.get(f["id"], ""), d))
         else:
             findings.append(f)
+    reason_counts = {}
+    for f_, r_, _d in rejected:
+        if f_["id"] in decisions and r_.strip():                      # explicit per-ID decisions only; bulk rules are deliberate
+            reason_counts.setdefault(norm_ws(r_).lower()[:220], []).append(f_["id"])
+    shared_reasons = [(ids[0], len(ids), k) for k, ids in reason_counts.items() if len(ids) >= 5]
+    for _first, n_, k in shared_reasons:
+        warnings.append(f"{n_} candidates were rejected with the identical reason \"{k[:90]}…\": use a `bulk` rule (rule/file_regex) if that is deliberate, otherwise give each its own evidence")
+    manual_list = []
     for n in tri.get("new_findings") or []:
         loc_line = int(n.get("line", 1) or 1)
-        findings.append(dict(id="", rule="MANUAL", domain=n["domain"], severity=n["severity"], cwe=n.get("cwe", ""), owasp=n.get("owasp") or owasp_for(n.get("cwe", "")),
+        explicit = n.get("id") if re.fullmatch(r"FND-M\d{1,4}", str(n.get("id", ""))) else None
+        manual_list.append(dict(id="", rule="MANUAL", domain=n["domain"], severity=n["severity"], cwe=n.get("cwe", ""), owasp=n.get("owasp") or owasp_for(n.get("cwe", "")),
                              title=n["title"], file=n.get("file", "(multiple)"), line=loc_line, description=n.get("description", ""), detail="",
                              fix=n.get("fix", ""), impact=n.get("impact", ""), exploit_scenario=n.get("exploit_scenario", ""),
                              locations=[dict(line=loc_line, snippet=redact_line(n.get("evidence", "")))] if n.get("evidence") else [],
                              confidence=n.get("confidence", "High"), decision="confirmed", source="manual", status="Open",
-                             controls_extra=n.get("controls_extra", {})))
+                             controls_extra=n.get("controls_extra", {}), patch=n.get("patch", ""),
+                             _mkey=n.get("key") or f"{n.get('file', '')}|{n.get('cwe', '')}|{n['domain']}", _explicit_id=explicit))
+    assign_manual_ids(manual_list, os.path.join(os.path.dirname(os.path.abspath(a.scan)), "finding-ids.json"))
+    ids_seen = {}
+    for mf in manual_list:
+        if mf["id"] in ids_seen:
+            errors.append(f"two manual findings share the ID {mf['id']} ('{ids_seen[mf['id']]}' and '{mf['title']}'); give each a distinct `id` or `key`")
+        ids_seen[mf["id"]] = mf["title"]
+    findings.extend(manual_list)
     findings.sort(key=lambda f: (SEV.index(f["severity"]), dom_order.index(f["domain"]) if f["domain"] in dom_order else 99, f["file"], f["line"]))
-    n_manual = 0
+    n_manual = len(manual_list)
     for f in findings:
-        if not f["id"]:
-            n_manual += 1
-            f["id"] = f"FND-M{n_manual:02d}"
         f["owasp"] = f.get("owasp") or owasp_for(f.get("cwe", ""))
         if f["domain"] not in dom_title:
             errors.append(f"{f['id']}: unknown domain '{f['domain']}'")
@@ -328,7 +450,13 @@ def main():
     elif a.verification:
         errors.append(f"verification file {a.verification} not found")
     resolution = tri.get("verification_resolution") or {}
-    vstat = dict(agree=0, disagree=0, disagree_resolved=0, inconclusive=0, missing=0, self_only=0)
+    manifest = {}
+    try:
+        with open(os.path.join(out_dir_guess, "work", "verify", "manifest.json"), encoding="utf-8") as fh:
+            manifest = json.load(fh)
+    except (OSError, ValueError):
+        manifest = {}
+    vstat = dict(agree=0, disagree=0, disagree_resolved=0, inconclusive=0, missing=0, self_only=0, unbound=0, stale=0)
     crit_high = [f for f in confirmed if f["severity"] in ("Critical", "High")]
     for f in crit_high:
         v = ver_entries.get(f["id"]) or ver_entries.get(f.get("fingerprint", ""))
@@ -341,10 +469,17 @@ def main():
             errors.append(f"{f['id']}: verification verdict must be agree, disagree or inconclusive (got '{verdict}')")
             continue
         indep = "self" if "self" in str(v.get("independence", v.get("verifier", ""))).lower() else "independent"
+        psha = str(v.get("packet_sha256", "")).strip().lower()
+        want = ((manifest.get(f["id"]) or {}).get("sha256") or "").lower()
+        binding = "bound" if (psha and want and psha == want) else "stale" if (psha and want) else "unbound"
         f["verification"] = dict(verdict=verdict, verifier=v.get("verifier", "unspecified"), independence=indep, notes=(v.get("notes") or "").strip(),
-                                 severity_suggestion=v.get("severity_suggestion", ""))
+                                 severity_suggestion=v.get("severity_suggestion", ""), binding=binding, session=str(v.get("session", v.get("model", "")))[:60])
         if indep == "self":
             vstat["self_only"] += 1
+        elif binding != "bound":
+            vstat[binding] += 1
+            if binding == "stale":
+                warnings.append(f"{f['id']}: the verification refers to an older version of the packet (the code excerpt or claim changed since it was reviewed); re-verify")
         if verdict == "disagree":
             res_note = (resolution.get(f["id"]) or "").strip()
             if not res_note:
@@ -425,7 +560,14 @@ def main():
         if v["verdict"] == "not verified":
             return "Not re-checked by a second pass"
         who = v.get("verifier") or "unspecified"
-        kind = "same assessor, second pass" if v.get("independence") == "self" else "independent reviewer"
+        if v.get("independence") == "self":
+            kind = "same assessor, second pass"
+        else:
+            kind = {"bound": "independence reported by the reviewer; response tied to the verification packet",
+                    "stale": "independence reported by the reviewer; packet changed since the review",
+                    "unbound": "independence reported by the reviewer; not tied to a verification packet"}[v.get("binding", "unbound")]
+        if v.get("session"):
+            who += f", {v['session']}"
         txt = {"agree": "Agreed", "disagree": "Disputed", "inconclusive": "Inconclusive"}[v["verdict"]] + f" ({kind}: {who})"
         if v.get("notes"):
             txt += ". " + v["notes"]
@@ -521,9 +663,9 @@ def main():
     if accepted:
         w(f"\n{len(accepted)} further candidate(s) are covered by accepted-risk or false-positive suppression entries and are not counted above (Section 3.3).")
     if crit_high:
-        indep = vstat["agree"] + vstat["disagree"] + vstat["inconclusive"] - vstat["self_only"]
         w(f"\nIndependent verification: {len(crit_high) - vstat['missing']} of {len(crit_high)} Critical/High findings were re-checked by a second pass "
-          f"({vstat['agree']} agreed, {vstat['disagree']} disputed, {vstat['inconclusive']} inconclusive; {vstat['self_only']} by the same assessor rather than an independent reviewer)."
+          f"({vstat['agree']} agreed, {vstat['disagree']} disputed, {vstat['inconclusive']} inconclusive; {vstat['self_only']} by the same assessor rather than an independent reviewer; "
+          f"{vstat['unbound'] + vstat['stale']} reported independent but not tied to a current verification packet, so independence rests on the reviewer's statement)."
           + (f" {vstat['missing']} were not re-checked." if vstat["missing"] else ""))
     w("\n### 1.4 Posture by Control Domain\n")
     rows = []
@@ -816,6 +958,9 @@ def main():
         n_c = sum(1 for _f, _r, d_ in rejected if d_ == "consolidated")
         w(f"{len(rejected)} candidate(s) were not carried into Section 5: {len(rejected) - n_c} incorrect or inapplicable pattern match(es) and {n_c} valid observation(s) consolidated into another finding. "
           "A consolidation is not a claim that the weakness is absent.\n")
+    if shared_reasons:
+        w("\n**Review note.** " + "; ".join(f"{n_} candidates share the identical recorded reason \"{k[:80]}…\"" for _f, n_, k in shared_reasons) +
+          ". Identical wording is acceptable for a deliberate bulk rule, but confirm each candidate was read individually before relying on these rejections.\n")
     w(table(["ID", "Rule", "Location", "Reason"], [[f["id"], f["rule"], f"`{f['file']}:{f['line']}`", r_] for f, r_, _d in rejected]) if rejected else "None.")
 
     text = "\n".join(L) + "\n"

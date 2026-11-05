@@ -209,12 +209,23 @@ def test_verification_flow():
         assert bad.returncode == 2 and "verifier disagrees" in bad.stderr
         tri2 = triage_all_confirmed(os.path.join(tmp, "t2.json"), {"verification_resolution": {high[0]["id"]: "Caller does not cast; verified at views.py:12"}})
         _, md = render(out, tri2)
-        assert "Disputed (independent reviewer: agent-2)" in md and "Assessor resolution: Caller does not cast" in md
+        assert "Disputed (independence reported by the reviewer; not tied to a verification packet: agent-2)" in md and "Assessor resolution: Caller does not cast" in md
         # agreement from the same assessor is labelled as weaker than an independent review
         v["verifications"][high[0]["id"]] = {"verdict": "agree", "verifier": "me", "independence": "self", "notes": "re-read, still true"}
         json.dump(v, open(vp, "w"))
         _, md = render(out, tri)
         assert "same assessor, second pass" in md and "Independent verification:" in md and "by the same assessor rather than an independent reviewer" in md
+        # an independent verdict that echoes the packet hash is shown as tied to that packet; a stale hash is called out
+        manifest = json.load(open(os.path.join(packets, "manifest.json")))
+        v["verifications"][high[0]["id"]] = {"verdict": "agree", "verifier": "agent-3", "independence": "independent", "session": "model-x",
+                                             "packet_sha256": manifest[high[0]["id"]]["sha256"], "notes": "confirmed from the packet"}
+        json.dump(v, open(vp, "w"))
+        r, md = render(out, tri)
+        assert "response tied to the verification packet: agent-3, model-x" in md
+        v["verifications"][high[0]["id"]]["packet_sha256"] = "0" * 64
+        json.dump(v, open(vp, "w"))
+        r, md = render(out, tri)
+        assert "packet changed since the review" in md and "older version of the packet" in r.stderr
 
 
 def test_sarif_and_ci_gate():
@@ -243,6 +254,88 @@ def test_sarif_and_ci_gate():
         assert "CI gate passed" in passed.stdout
         gated2, _ = render(out, only_unconfirmed, "--fail-on", "High", "--fail-on-unconfirmed", ok=False)
         assert gated2.returncode == 10
+
+
+def test_manual_citations_are_checked_and_corrected_against_the_source():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, out = os.path.join(tmp, "repo"), os.path.join(tmp, "out")
+        pad = "".join(f"# filler line {i}\n" for i in range(25))          # evidence ends up far from the (wrong) cited line
+        write(repo, {"svc/api.py": "import os\n" + pad + "\ndef handler(req):\n    token = os.environ['T']\n    data = open(req.args['f']).read()\n    return data\n"})
+        audit(repo, out)
+        nf = [{"title": "Handler reads arbitrary files", "domain": "owasp", "severity": "High", "cwe": "CWE-22", "file": "svc/api.py", "line": 2,
+               "evidence": "data = open(req.args['f']) ... return data", "description": "d", "impact": "i", "exploit_scenario": "e", "fix": "f"},
+              {"title": "Wrong file", "domain": "owasp", "severity": "Low", "cwe": "CWE-1", "file": "svc/gone.py", "line": 1, "evidence": "x", "fix": "f"},
+              {"title": "Phantom evidence", "domain": "owasp", "severity": "Low", "cwe": "CWE-2", "file": "svc/api.py", "line": 4, "evidence": "this text is nowhere in the file", "fix": "f"}]
+        tri = triage_all_confirmed(os.path.join(tmp, "t.json"), {"new_findings": nf})
+        r, md = render(out, tri, "--repo", repo)
+        assert "cited line 2 but the quoted evidence is at line 30; corrected" in r.stderr
+        assert "'svc/gone.py' is not in the working tree" in r.stderr and "quoted evidence was not found" in r.stderr
+        assert "`svc/api.py:30`" in md, "the corrected line is what the report cites"
+        bad, _ = render(out, tri, "--repo", repo, "--strict-evidence", ok=False)
+        assert bad.returncode == 2 and "was not found in the file" in bad.stderr
+        none, _ = render(out, tri)
+        assert "were not checked against the source" in none.stderr
+
+
+def test_manual_finding_ids_are_stable_when_severity_or_title_changes():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, out = os.path.join(tmp, "repo"), os.path.join(tmp, "out")
+        write(repo, {"a.py": "x = 1\n"})
+        audit(repo, out)
+
+        def nf(title_a, sev_a, title_b="Second issue"):
+            return [{"title": title_a, "domain": "access", "severity": sev_a, "cwe": "CWE-306", "file": "a.py", "line": 1, "fix": "f"},
+                    {"title": title_b, "domain": "crypto", "severity": "Medium", "cwe": "CWE-327", "file": "a.py", "line": 1, "fix": "f"}]
+
+        def ids(tri_extra):
+            tri = triage_all_confirmed(os.path.join(tmp, "t.json"), tri_extra)
+            _, md = render(out, tri)
+            return dict(re.findall(r"^\| 5\.\d+ \| (FND-M\d+) \| \w+ \| [^|]+ \| ([^|]+) \|", md, re.M))
+        first = ids({"new_findings": nf("First issue", "Low")})
+        by_title = {v.strip(): k for k, v in first.items()}
+        # raise the first finding to Critical (it now sorts above the other) and reword its title: IDs must not move
+        second = ids({"new_findings": nf("First issue, reworded", "Critical")})
+        by_title2 = {v.strip(): k for k, v in second.items()}
+        assert by_title["First issue"] == by_title2["First issue, reworded"]
+        assert by_title["Second issue"] == by_title2["Second issue"]
+        # an explicit id is honoured and two findings may not share one
+        dup = nf("A", "Low")
+        dup[0]["id"], dup[1]["id"] = "FND-M42", "FND-M42"
+        tri = triage_all_confirmed(os.path.join(tmp, "t.json"), {"new_findings": dup})
+        bad, _ = render(out, tri, ok=False)
+        assert bad.returncode == 2 and "share the ID FND-M42" in bad.stderr
+
+
+def test_identical_rejection_reasons_are_called_out():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, out = os.path.join(tmp, "repo"), os.path.join(tmp, "out")
+        write(repo, {f"m{i}.py": VULN_A for i in range(6)})
+        s = audit(repo, out)
+        decisions = {f["id"]: {"decision": "false_positive", "reason": "Reviewed the code: constant value, not attacker controlled."} for f in s["findings"] if f["rule"] == "INJ-SQL-1"}
+        assert len(decisions) >= 5
+        tri = triage_all_confirmed(os.path.join(tmp, "t.json"), {"decisions": decisions})
+        r, md = render(out, tri)
+        assert "rejected with the identical reason" in r.stderr and "**Review note.**" in md
+        # a deliberate bulk rule with the same wording is not flagged
+        bulk = {"bulk": [{"rule": "INJ-SQL-1", "decision": "false_positive", "reason": "Reviewed the code: constant value, not attacker controlled."}]}
+        tri2 = triage_all_confirmed(os.path.join(tmp, "t2.json"), bulk)
+        tri2_data = json.load(open(tri2))
+        tri2_data["bulk"] = bulk["bulk"] + [{"rule": "*", "decision": "confirmed", "reason": "t"}]
+        json.dump(tri2_data, open(tri2, "w"))
+        r2, md2 = render(out, tri2)
+        assert "rejected with the identical reason" not in r2.stderr
+
+
+def test_api3_and_flow_findings_appear_in_a_rendered_report_with_real_evidence():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo, out = os.path.join(tmp, "repo"), os.path.join(tmp, "out")
+        write(repo, {"svc/a.py": 'import requests\nfrom fastapi import APIRouter\nr = APIRouter()\n\n@r.post("/html/{u}")\ndef up(u: str):\n    return requests.get(u).text\n',
+                     "requirements.txt": "httpx\npyyaml==5.3\n"})
+        s = audit(repo, out)
+        rules = {f["rule"] for f in s["findings"]}
+        assert {"API-3", "SSRF-1", "DEP-1", "DEP-3"} <= rules
+        _, md = render(out, triage_all_confirmed(os.path.join(tmp, "t.json")))
+        assert "pyyaml==5.3" in md and "Data flow: untrusted input from route parameter `u`" in md
 
 
 if __name__ == "__main__":
