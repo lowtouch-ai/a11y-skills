@@ -60,7 +60,17 @@ Before changing any file, run `git rev-parse --abbrev-ref HEAD` (skip this step 
 > 1. **Continue** on `<current_branch>`, or
 > 2. **Create and check out** a new branch `<new_branch_name>` for the documentation changes?
 
-Suggest a name such as `docs/readme-update` (README scope) or `docs/update-documentation` (suite scope), and let the user supply their own. If they choose a new branch, run `git checkout -b <new_branch_name>`; if the branch already exists or the working tree has conflicting uncommitted changes, report it and ask again instead of forcing. Never commit, push or switch branches without this answer. Skip the question only when the user's request already names the branch to use.
+Suggest a name such as `docs/readme-update` (README scope) or `docs/update-documentation` (suite scope), and let the user supply their own.
+
+**Check for uncommitted work before any checkout.** Run `git status --porcelain`. If it lists anything (modified, staged or untracked files), show the list and ask, and wait for the answer:
+
+> There are uncommitted or untracked files: `<list>`. Do you want to:
+> 1. **Carry them over** to the new branch (`git checkout -b` keeps them as they are),
+> 2. **Stash them** first (`git stash push --include-untracked`) and restore them afterwards,
+> 3. **Commit them** first (you approve the message), or
+> 4. **Stay** on `<current_branch>` and cancel the branch change?
+
+Never discard, reset, clean or commit these files on your own. If they choose to stay on the current branch, still tell them the documentation edits will sit alongside those uncommitted files. Only after the answer, run `git checkout -b <new_branch_name>`; if the branch already exists or the checkout fails, report it and ask again instead of forcing. Never commit, push or switch branches without this answer. Skip the question only when the user's request already names the branch to use.
 
 ### 1. Discover
 ```bash
